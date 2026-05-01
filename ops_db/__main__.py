@@ -417,8 +417,23 @@ def _dispatch(args: argparse.Namespace) -> int:
 
     # ── replicate ───────────────────────────────────────────────────────────
     elif args.command == "replicate":
-        print("⚠️  replicate 模块暂未实现，后续版本支持")
-        return 1
+        from ops_db.modules.replicate import setup_replication
+
+        module_kwargs = {
+            "master_host": args.master_host,
+            "slave_host": args.slave_host,
+            "master_port": args.master_port,
+            "slave_port": args.slave_port,
+            "master_user": args.master_user,
+            "master_password": args.master_password,
+            "slave_user": args.slave_user,
+            "slave_password": args.slave_password,
+            "repl_user": args.repl_user,
+            "repl_password": args.repl_password,
+            "repl_host": args.repl_host,
+            "yes": args.yes,
+        }
+        success, msg = setup_replication(**module_kwargs)
 
     # ── rebuild ─────────────────────────────────────────────────────────────
     elif args.command == "rebuild":
