@@ -259,10 +259,11 @@ def setup_replication(
 
     流程：
     1. 前置检查（版本、server-id、端口连通性）
-    2. 获取主库复制坐标
-    3. 确保复制账户存在
-    4. 在备库执行 CHANGE MASTER TO
-    5. 启动复制并验证
+    2. 如果备库未安装，先安装
+    3. 获取主库复制坐标
+    4. 确保复制账户存在
+    5. 在备库执行 CHANGE MASTER TO
+    6. 启动复制并验证
 
     :param master_host: 主库主机
     :param slave_host: 备库主机
@@ -372,6 +373,16 @@ def setup_replication(
     if report.has_fatal:
         print("❌ 前置检查失败，请修复上述问题后重试")
         return False, "前置检查失败"
+
+    # 如果备库未安装，提示先安装
+    if not check_slave_conn:
+        print("❌ 备库未安装或无法连接")
+        print(f"\n请先安装备库 MySQL:")
+        print(f"  ops_db.py install --version 8.0 \\")
+        print(f"    --host {slave_host} \\")
+        print(f"    --port {slave_port} \\")
+        print(f"    --role slave")
+        return False, "备库未安装，请先执行 install 命令"
 
     # 确认操作
     if not yes:
