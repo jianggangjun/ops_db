@@ -680,20 +680,19 @@ def restore_partial(
                     errors.append(f"CREATE {db_name} 失败: {e}")
                     continue
 
-                # 尝试从备份目录获取 DDL（先找 .sql 文件）
+                # 从备份目录获取 DDL 或从 MySQL 连接获取
                 table_defs: dict[str, str] = {}
                 sql_file = os.path.join(backup_dir, f"{db_name}.sql")
                 if os.path.exists(sql_file):
                     # 从 mysqldump 备份中提取表结构
                     with open(sql_file) as f:
                         content = f.read()
-                    # 简单解析 CREATE TABLE 语句
                     import re
+
                     for match in re.finditer(
                         r"CREATE TABLE[^;]+;", content, re.DOTALL
                     ):
                         ddl = match.group().strip()
-                        # 提取表名
                         tbl_match = re.search(
                             r"CREATE TABLE.*?`?(\w+)`?\s*\(", ddl, re.IGNORECASE
                         )
@@ -701,10 +700,26 @@ def restore_partial(
                             table_defs[tbl_match.group(1)] = ddl
                     logger.info(f"从 {sql_file} 提取到 {len(table_defs)} 个表结构")
                 else:
-                    logger.warning(
-                        f"未找到表结构文件 {sql_file}，"
-                        "将尝试用 CREATE TABLE + DISCARD/IMPORT 方式"
-                    )
+                    # 尝试从当前 MySQL 连接获取表结构
+                    logger.info(f"尝试从 MySQL 连接获取 {db_name} 的表结构...")
+                    try:
+                        cur.execute(f"USE `{db_name}`")
+                        cur.execute(
+                            "SELECT TABLE_NAME FROM information_schema.TABLES "
+                            f"WHERE TABLE_SCHEMA = '{db_name}' AND TABLE_TYPE = 'BASE TABLE'"
+                        )
+                        tables = [row[0] for row in cur.fetchall()]
+                        for tbl in tables:
+                            cur.execute(f"SHOW CREATE TABLE `{tbl}`")
+                            row = cur.fetchone()
+                            if row and row[1]:
+                                table_defs[tbl] = row[1]
+                        if table_defs:
+                            logger.info(f"从 MySQL 获取到 {len(table_defs)} 个表结构")
+                        else:
+                            logger.warning(f"MySQL 中无 {db_name} 的表定义")
+                    except Exception as e:
+                        logger.warning(f"从 MySQL 获取表结构失败: {e}")
 
                 # 遍历备份目录中的 .ibd 和 .cfg 文件
                 for fname in os.listdir(db_backup_dir):
