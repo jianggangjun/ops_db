@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import os
 import sys
+from datetime import datetime
 from pathlib import Path
 
 # 确保 lib 和 modules 可导入
@@ -111,6 +112,9 @@ def _build_parser() -> argparse.ArgumentParser:
     p_restore.add_argument("--binlog-file", help="binlog-replay：文件名")
     p_restore.add_argument("--start-position", type=int)
     p_restore.add_argument("--stop-position", type=int)
+    p_restore.add_argument("--database", help="binlog-replay/partial：数据库名")
+    p_restore.add_argument("--databases", nargs="+", help="partial：多个数据库")
+    p_restore.add_argument("--dest", help="binlog-replay：SQL 输出路径")
     p_restore.add_argument("--dry-run", action="store_true", help="binlog-replay：只生成 SQL")
     _add_ssh_args(p_restore)
 
@@ -342,15 +346,18 @@ def _dispatch(args: argparse.Namespace) -> int:
 
     # ── restore ─────────────────────────────────────────────────────────────
     elif args.command == "restore":
-        if args.type != "full":
-            print("⚠️  PITR / partial / binlog-replay 恢复暂未实现，可手动操作")
-            return 1
-        if not args.backup_dir:
+        if not args.backup_dir and args.type in ("full", "pitr", "partial"):
             print("--backup-dir 参数必填")
             return 1
+        if args.type == "binlog-replay":
+            if not args.binlog_file:
+                print("--binlog-file 参数必填")
+                return 1
+            if not args.start_position:
+                print("--start-position 参数必填")
+                return 1
 
         module_kwargs = {
-            "backup_dir": args.backup_dir,
             "host": args.host,
             "port": args.port,
             "user": args.user,
@@ -367,10 +374,42 @@ def _dispatch(args: argparse.Namespace) -> int:
         if _is_remote(args):
             success, msg = _run_remote(args, "restore", module_kwargs)
         else:
-            from ops_db.modules.backup import restore_full
+            from ops_db.modules.restore import (
+                restore_binlog_replay,
+                restore_full,
+                restore_partial,
+                restore_pitr,
+            )
             local_kwargs = {k: v for k, v in module_kwargs.items()
                             if not k.startswith("ssh_")}
-            success, msg = restore_full(**local_kwargs)
+
+            if args.type == "full":
+                local_kwargs["backup_dir"] = args.backup_dir
+                success, msg = restore_full(**local_kwargs)
+            elif args.type == "pitr":
+                local_kwargs["backup_dir"] = args.backup_dir
+                local_kwargs["stop_datetime"] = args.stop_datetime or datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                local_kwargs["binlog_dir"] = args.binlog_dir or "/var/lib/mysql/binlog"
+                success, msg = restore_pitr(**local_kwargs)
+            elif args.type == "partial":
+                local_kwargs["backup_dir"] = args.backup_dir
+                local_kwargs["databases"] = getattr(args, "databases", None)
+                if not local_kwargs["databases"]:
+                    print("--databases 参数必填")
+                    return 1
+                success, msg = restore_partial(**local_kwargs)
+            elif args.type == "binlog-replay":
+                local_kwargs["binlog_file"] = args.binlog_file
+                local_kwargs["start_position"] = args.start_position
+                local_kwargs["stop_position"] = args.stop_position
+                local_kwargs["binlog_dir"] = args.binlog_dir or "/var/lib/mysql/binlog"
+                local_kwargs["database"] = getattr(args, "database", None)
+                local_kwargs["dest"] = getattr(args, "dest", None)
+                local_kwargs["dry_run"] = args.dry_run
+                success, msg = restore_binlog_replay(**local_kwargs)
+            else:
+                print(f"不支持的恢复类型: {args.type}")
+                return 1
 
     # ── replicate ───────────────────────────────────────────────────────────
     elif args.command == "replicate":
