@@ -441,8 +441,10 @@ def backup_incr(
     password: Optional[str] = None,
     dest: Optional[str] = None,
     parallel: int = 4,
+    compress: bool = False,
     yes: bool = False,
     socket: Optional[str] = None,
+    expire_days: int = 7,
 ) -> tuple[bool, str]:
     """
     增量备份（xtrabackup --incremental）。
@@ -455,8 +457,10 @@ def backup_incr(
     :param password: 密码
     :param dest: 备份目标根目录
     :param parallel: 并行线程数
+    :param compress: 是否压缩（需要 qpress）
     :param yes: 跳过确认
     :param socket: MySQL socket 文件路径
+    :param expire_days: 备份保留天数
     :return (success, message)
     """
     dest = dest or DEFAULT_BACKUP_ROOT
@@ -516,6 +520,8 @@ def backup_incr(
         cmd_parts.append(f"--password={password}")
     if socket:
         cmd_parts.append(f"--socket={socket}")
+    if compress:
+        cmd_parts.append("--compress")
 
     cmd = " ".join(cmd_parts)
     logger.info(f"执行增量备份: {_mask_password(cmd, password)}")
@@ -536,6 +542,9 @@ def backup_incr(
     meta = _get_backup_meta(incr_dir, "incr", host, port, user, password)
     meta["basedir"] = latest_full
     _write_backup_meta(incr_dir, meta)
+
+    # 清理过期备份（按天数）
+    _cleanup_old_backups(dest, expire_days=expire_days)
 
     print_success(incr_dir, "增量备份", f"基于: {latest_full}")
     return True, f"增量备份成功: {incr_dir}"
@@ -572,6 +581,7 @@ def backup_dump(
     extra_args: str = "",
     yes: bool = False,
     socket: Optional[str] = None,
+    parallel: int = 4,
 ) -> tuple[bool, str]:
     """
     逻辑备份（mysqldump）。
@@ -586,6 +596,7 @@ def backup_dump(
     :param extra_args: 额外 mysqldump 参数，如 "--single-transaction"
     :param yes: 跳过确认
     :param socket: MySQL socket 文件路径
+    :param parallel: 并行压缩线程数（需要 pigz），默认 4
     :return (success, message)
     """
     dest = dest or DEFAULT_BACKUP_ROOT
@@ -650,13 +661,28 @@ def backup_dump(
     else:
         logger.info(f"备份验证通过: {verify_msg}")
 
-    # 压缩
+    # 压缩（优先使用 pigz 实现并行压缩）
     gzip_file = dump_file + ".gz"
-    try:
-        run_command(f"gzip {dump_file}")
-        dump_file = gzip_file
-    except Exception as e:
-        logger.warning(f"压缩失败，跳过: {e}")
+    if parallel > 1:
+        # 尝试使用 pigz 并行压缩
+        try:
+            run_command(f"pigz -p {parallel} {dump_file}")
+            dump_file = gzip_file
+            logger.info(f"使用 pigz 并行压缩（-p {parallel}）")
+        except Exception:
+            # pigz 不可用，降级为普通 gzip
+            logger.warning("pigz 未安装，降级为普通 gzip")
+            try:
+                run_command(f"gzip {dump_file}")
+                dump_file = gzip_file
+            except Exception as e:
+                logger.warning(f"压缩失败，跳过: {e}")
+    else:
+        try:
+            run_command(f"gzip {dump_file}")
+            dump_file = gzip_file
+        except Exception as e:
+            logger.warning(f"压缩失败，跳过: {e}")
 
     file_size = os.path.getsize(dump_file) / (1024**2)
     meta = {
