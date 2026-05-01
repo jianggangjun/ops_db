@@ -155,6 +155,10 @@ def _build_parser() -> argparse.ArgumentParser:
     p_check.add_argument("--port", type=int, default=3306)
     p_check.add_argument("--user", default="root")
     p_check.add_argument("--password", help="建议用环境变量")
+    p_check.add_argument("--no-replication", action="store_true",
+                         help="跳过复制状态检查")
+    p_check.add_argument("--no-performance", action="store_true",
+                         help="跳过性能检查（慢查询/连接数/锁/磁盘）")
     p_check.add_argument("--verbose", "-v", action="store_true")
     _add_ssh_args(p_check)
 
@@ -437,13 +441,39 @@ def _dispatch(args: argparse.Namespace) -> int:
 
     # ── rebuild ─────────────────────────────────────────────────────────────
     elif args.command == "rebuild":
-        print("⚠️  rebuild 模块暂未实现，后续版本支持")
-        return 1
+        from ops_db.modules.rebuild import rebuild
+
+        module_kwargs = {
+            "reason": args.reason,
+            "master_host": args.master_host,
+            "master_port": args.master_port,
+            "slave_host": args.slave_host,
+            "slave_port": args.slave_port,
+            "master_user": args.master_user,
+            "master_password": args.master_password,
+            "slave_user": args.slave_user,
+            "slave_password": args.slave_password,
+            "ssh_host": getattr(args, "ssh_host", None),
+            "ssh_port": getattr(args, "ssh_port", 22),
+            "ssh_user": getattr(args, "ssh_user", "root"),
+            "ssh_password": getattr(args, "ssh_password", None),
+            "ssh_key": getattr(args, "ssh_key", None),
+        }
+        success, msg = rebuild(**module_kwargs)
 
     # ── check ───────────────────────────────────────────────────────────────
     elif args.command == "check":
-        print("⚠️  check 模块暂未实现，可手动执行 mysqlcheck")
-        return 1
+        from ops_db.modules.check import check
+
+        module_kwargs = {
+            "host": args.host,
+            "port": args.port,
+            "user": args.user,
+            "password": args.password,
+            "check_replication": not getattr(args, "no_replication", False),
+            "check_performance": not getattr(args, "no_performance", False),
+        }
+        success, msg = check(**module_kwargs)
 
     else:
         parser = _build_parser()
