@@ -745,6 +745,24 @@ def restore_partial(
 
                     import shutil
 
+                    # 尝试 IMPORT TABLESPACE
+                    if table_name in table_defs:
+                        # 有表定义：先 CREATE，再 DISCARD 删除自动创建的 .ibd，
+                        # 再复制备份的 .ibd，最后 IMPORT
+                        try:
+                            cur.execute(f"USE `{db_name}`")
+                            cur.execute(table_defs[table_name])
+                            conn.commit()
+                            # MySQL 8.0 CREATE TABLE 自动创建空的 .ibd，
+                            # 先 DISCARD 丢弃它
+                            cur.execute(f"ALTER TABLE `{db_name}`.`{table_name}` DISCARD TABLESPACE")
+                            conn.commit()
+                        except Exception as e:
+                            errors.append(f"CREATE/DISCARD {table_name} 失败: {e}")
+                            logger.error(f"  CREATE/DISCARD {table_name} 失败: {e}")
+                            continue
+
+                    # 复制 .ibd 文件（DISCARD 之后）
                     os.makedirs(os.path.join(datadir, db_name), exist_ok=True)
                     shutil.copy2(src_ibd, dst_ibd)
                     # 复制 .cfg 文件（xtrabackup 8.0 需要）
@@ -754,17 +772,9 @@ def restore_partial(
                     if os.path.exists(src_cfg):
                         run_command(f"chown mysql:mysql {os.path.join(datadir, db_name, f'{table_name}.cfg')}")
 
-                    # 尝试 IMPORT TABLESPACE
+                    # IMPORT TABLESPACE（.ibd 复制之后）
                     if table_name in table_defs:
-                        # 有表定义：先创建表，再 DISCARD + IMPORT
                         try:
-                            cur.execute(f"USE `{db_name}`")
-                            cur.execute(table_defs[table_name])
-                            conn.commit()
-                            # MySQL 8.0 CREATE TABLE 会自动创建空的 .ibd，
-                            # 需要先 DISCARD 再 IMPORT
-                            cur.execute(f"ALTER TABLE `{db_name}`.`{table_name}` DISCARD TABLESPACE")
-                            conn.commit()
                             cur.execute(f"ALTER TABLE `{db_name}`.`{table_name}` IMPORT TABLESPACE")
                             conn.commit()
                             logger.info(f"  {table_name} 恢复成功（CREATE + IMPORT）")
