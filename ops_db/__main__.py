@@ -325,9 +325,9 @@ def _dispatch(args: argparse.Namespace) -> int:
             }
 
             if args.type == "full":
-                # full 不支持 type 参数
+                # full 不支持 type / databases / all_databases 参数
                 full_kwargs = {k: v for k, v in common_kwargs.items()
-                               if k not in ("type",)}
+                               if k not in ("type", "databases", "all_databases")}
                 success, msg = backup_full(**full_kwargs)
             elif args.type == "incr":
                 # incr 不支持 compress / expire_days / databases / all_databases
