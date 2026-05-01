@@ -688,12 +688,8 @@ def restore_partial(
                     logger.info(f"  恢复表: {db_name}.{table_name}")
 
                     try:
-                        # discard 旧表空间（如果存在）
-                        cur.execute(
-                            f"USE `{db_name}`; "
-                            f"SET FOREIGN_KEY_CHECKS=0; "
-                            f"DROP TABLE IF EXISTS `{table_name}`;"
-                        )
+                        # 分开执行：先 DROP TABLE，再 IMPORT TABLESPACE
+                        cur.execute(f"DROP TABLE IF EXISTS `{db_name}`.`{table_name}`")
                         conn.commit()
                     except Exception as e:
                         logger.warning(f"  DROP {table_name} 失败（可能表不存在）: {e}")
@@ -708,7 +704,7 @@ def restore_partial(
                         run_command(f"chown mysql:mysql {dst_ibd}")
 
                         # import 表空间
-                        cur.execute(f"USE `{db_name}`; ALTER TABLE `{table_name}` IMPORT TABLESPACE;")
+                        cur.execute(f"ALTER TABLE `{db_name}`.`{table_name}` IMPORT TABLESPACE")
                         conn.commit()
                         logger.info(f"  {table_name} 恢复成功")
                         restored_tables += 1
