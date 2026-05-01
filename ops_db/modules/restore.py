@@ -663,28 +663,10 @@ def restore_partial(
                     errors.append(f"备份中无 {db_name}")
                     continue
 
-                # 删除目标库
-                logger.info(f"删除目标数据库: {db_name}")
-                try:
-                    cur.execute(f"DROP DATABASE IF EXISTS `{db_name}`")
-                    conn.commit()
-                except Exception as e:
-                    errors.append(f"DROP {db_name} 失败: {e}")
-                    continue
-
-                # 创建库
-                try:
-                    cur.execute(f"CREATE DATABASE `{db_name}`")
-                    conn.commit()
-                except Exception as e:
-                    errors.append(f"CREATE {db_name} 失败: {e}")
-                    continue
-
-                # 从备份目录获取 DDL 或从 MySQL 连接获取
+                # 1. 先获取表定义（DROP 之前，否则库已不存在）
                 table_defs: dict[str, str] = {}
                 sql_file = os.path.join(backup_dir, f"{db_name}.sql")
                 if os.path.exists(sql_file):
-                    # 从 mysqldump 备份中提取表结构
                     with open(sql_file) as f:
                         content = f.read()
                     import re
@@ -720,6 +702,23 @@ def restore_partial(
                             logger.warning(f"MySQL 中无 {db_name} 的表定义")
                     except Exception as e:
                         logger.warning(f"从 MySQL 获取表结构失败: {e}")
+
+                # 2. 删除目标库
+                logger.info(f"删除目标数据库: {db_name}")
+                try:
+                    cur.execute(f"DROP DATABASE IF EXISTS `{db_name}`")
+                    conn.commit()
+                except Exception as e:
+                    errors.append(f"DROP {db_name} 失败: {e}")
+                    continue
+
+                # 3. 创建库
+                try:
+                    cur.execute(f"CREATE DATABASE `{db_name}`")
+                    conn.commit()
+                except Exception as e:
+                    errors.append(f"CREATE {db_name} 失败: {e}")
+                    continue
 
                 # 遍历备份目录中的 .ibd 和 .cfg 文件
                 for fname in os.listdir(db_backup_dir):
