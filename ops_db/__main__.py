@@ -399,14 +399,18 @@ def _dispatch(args: argparse.Namespace) -> int:
                     return 1
                 success, msg = restore_partial(**local_kwargs)
             elif args.type == "binlog-replay":
-                local_kwargs["binlog_file"] = args.binlog_file
-                local_kwargs["start_position"] = args.start_position
-                local_kwargs["stop_position"] = args.stop_position
-                local_kwargs["binlog_dir"] = args.binlog_dir or "/var/lib/mysql/binlog"
-                local_kwargs["database"] = getattr(args, "database", None)
-                local_kwargs["dest"] = getattr(args, "dest", None)
-                local_kwargs["dry_run"] = args.dry_run
-                success, msg = restore_binlog_replay(**local_kwargs)
+                # binlog-replay 不需要 datadir/host/port/user/password
+                binlog_kwargs = {
+                    "binlog_file": args.binlog_file,
+                    "start_position": args.start_position,
+                    "stop_position": args.stop_position,
+                    "binlog_dir": args.binlog_dir or "/var/lib/mysql/binlog",
+                    "database": getattr(args, "database", None),
+                    "dest": getattr(args, "dest", None),
+                    "dry_run": args.dry_run,
+                    "yes": args.yes,
+                }
+                success, msg = restore_binlog_replay(**binlog_kwargs)
             else:
                 print(f"不支持的恢复类型: {args.type}")
                 return 1
