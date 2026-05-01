@@ -148,20 +148,20 @@ def run_preflight_checks(actions: list[str]) -> list[CheckResult]:
 ### xtrabackup
 ```bash
 # 全量备份
-innobackupex --user=root --password=xxx --parallel=4 /backup/path
+xtrabackup --user=root --password=xxx --parallel=4 /backup/path
 
 # 增量备份
-innobackupex --incremental --incremental-basedir=/backup/full /backup/incr
+xtrabackup --incremental --incremental-basedir=/backup/full /backup/incr
 
 # Prepare（恢复前必须）
-innobackupex --apply-log /backup/full
+xtrabackup --apply-log /backup/full
 
 # PITR prepare
-innobackupex --apply-log --binlog-dir=/path/to/binlog \
+xtrabackup --apply-log --binlog-dir=/path/to/binlog \
     --stop-datetime="2026-04-29 15:00:00" /backup/full
 
 # 恢复
-innobackupex --copy-back /backup/full
+xtrabackup --copy-back /backup/full
 ```
 
 ### mysqldump

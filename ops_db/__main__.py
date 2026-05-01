@@ -317,14 +317,25 @@ def _dispatch(args: argparse.Namespace) -> int:
             success, msg = _run_remote(args, "backup", module_kwargs)
         else:
             from ops_db.modules.backup import backup_full, backup_incr, backup_dump
-            local_kwargs = {k: v for k, v in module_kwargs.items()
-                            if not k.startswith("ssh_") and k not in ("type", "databases", "all_databases")}
+
+            # 公共参数
+            common_kwargs = {
+                k: v for k, v in module_kwargs.items()
+                if not k.startswith("ssh_")
+            }
+
             if args.type == "full":
-                success, msg = backup_full(**local_kwargs)
+                success, msg = backup_full(**common_kwargs)
             elif args.type == "incr":
-                success, msg = backup_incr(**local_kwargs)
+                # incr 不支持 compress / expire_days
+                incr_kwargs = {k: v for k, v in common_kwargs.items()
+                               if k not in ("compress", "expire_days", "databases", "all_databases")}
+                success, msg = backup_incr(**incr_kwargs)
             else:
-                success, msg = backup_dump(**local_kwargs)
+                # dump 不支持 compress / expire_days，替换 parallel 为 compress 相关逻辑
+                dump_kwargs = {k: v for k, v in common_kwargs.items()
+                               if k not in ("compress", "expire_days")}
+                success, msg = backup_dump(**dump_kwargs)
 
     # ── restore ─────────────────────────────────────────────────────────────
     elif args.command == "restore":

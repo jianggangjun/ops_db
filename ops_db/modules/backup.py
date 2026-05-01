@@ -326,7 +326,7 @@ def backup_full(
     expire_days: int = 7,
 ) -> tuple[bool, str]:
     """
-    全量备份（xtrabackup）。
+    全量备份（xtrabackup --backup）。
 
     :param host: MySQL 主机
     :param port: MySQL 端口
@@ -447,7 +447,7 @@ def backup_incr(
     expire_days: int = 7,
 ) -> tuple[bool, str]:
     """
-    增量备份（xtrabackup --incremental）。
+    增量备份（xtrabackup --backup --incremental）。
 
     依赖：必须有一个全量备份作为 basedir。
 
