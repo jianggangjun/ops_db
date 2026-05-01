@@ -327,14 +327,14 @@ def _dispatch(args: argparse.Namespace) -> int:
             if args.type == "full":
                 success, msg = backup_full(**common_kwargs)
             elif args.type == "incr":
-                # incr 不支持 compress / expire_days
+                # incr 不支持 compress / expire_days / databases / all_databases
                 incr_kwargs = {k: v for k, v in common_kwargs.items()
-                               if k not in ("compress", "expire_days", "databases", "all_databases")}
+                               if k not in ("type", "compress", "expire_days", "databases", "all_databases")}
                 success, msg = backup_incr(**incr_kwargs)
             else:
-                # dump 不支持 compress / expire_days，替换 parallel 为 compress 相关逻辑
+                # dump 不支持 compress / expire_days，databases/all_databases 已在函数内处理
                 dump_kwargs = {k: v for k, v in common_kwargs.items()
-                               if k not in ("compress", "expire_days")}
+                               if k not in ("type", "compress", "expire_days")}
                 success, msg = backup_dump(**dump_kwargs)
 
     # ── restore ─────────────────────────────────────────────────────────────
