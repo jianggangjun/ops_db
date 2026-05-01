@@ -756,10 +756,14 @@ def restore_partial(
 
                     # 尝试 IMPORT TABLESPACE
                     if table_name in table_defs:
-                        # 有表定义：先创建表，再 IMPORT
+                        # 有表定义：先创建表，再 DISCARD + IMPORT
                         try:
                             cur.execute(f"USE `{db_name}`")
                             cur.execute(table_defs[table_name])
+                            conn.commit()
+                            # MySQL 8.0 CREATE TABLE 会自动创建空的 .ibd，
+                            # 需要先 DISCARD 再 IMPORT
+                            cur.execute(f"ALTER TABLE `{db_name}`.`{table_name}` DISCARD TABLESPACE")
                             conn.commit()
                             cur.execute(f"ALTER TABLE `{db_name}`.`{table_name}` IMPORT TABLESPACE")
                             conn.commit()
