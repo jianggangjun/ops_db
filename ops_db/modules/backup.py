@@ -447,7 +447,7 @@ def backup_incr(
     expire_days: int = 7,
 ) -> tuple[bool, str]:
     """
-    增量备份（xtrabackup --backup --incremental）。
+    增量备份（xtrabackup --backup --incremental-basedir）。
 
     依赖：必须有一个全量备份作为 basedir。
 
@@ -509,7 +509,6 @@ def backup_incr(
         "xtrabackup",
         "--backup",
         f"--target-dir={incr_dir}",
-        "--incremental",
         f"--incremental-basedir={latest_full}",
         f"--user={user}",
         f"--host={host}",
@@ -645,7 +644,8 @@ def backup_dump(
         cmd_parts.extend(databases)
     else:
         logger.error("逻辑备份必须指定数据库（--databases）或使用 --all-databases")
-        return False, "逻辑备份失败：未指定要备份的数据库"
+        print("错误：未指定要备份的数据库，请使用 --databases <db1,db2,...> 或 --all-databases")
+        sys.exit(1)
     if extra_args:
         cmd_parts.extend(extra_args.split())
 
