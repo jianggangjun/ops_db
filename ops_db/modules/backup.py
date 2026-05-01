@@ -508,13 +508,13 @@ def backup_incr(
     cmd_parts = [
         "xtrabackup",
         "--backup",
+        f"--target-dir={incr_dir}",
         "--incremental",
+        f"--incremental-basedir={latest_full}",
         f"--user={user}",
         f"--host={host}",
         f"--port={port}",
         f"--parallel={parallel}",
-        f"--incremental-basedir={latest_full}",
-        f"--target-dir={incr_dir}",
     ]
     if password:
         cmd_parts.append(f"--password={password}")
@@ -643,6 +643,9 @@ def backup_dump(
         cmd_parts.append("--all-databases")
     elif databases:
         cmd_parts.extend(databases)
+    else:
+        logger.error("逻辑备份必须指定数据库（--databases）或使用 --all-databases")
+        return False, "逻辑备份失败：未指定要备份的数据库"
     if extra_args:
         cmd_parts.extend(extra_args.split())
 
