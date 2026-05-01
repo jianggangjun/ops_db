@@ -758,6 +758,7 @@ def restore_partial(
                     if table_name in table_defs:
                         # 有表定义：先创建表，再 IMPORT
                         try:
+                            cur.execute(f"USE `{db_name}`")
                             cur.execute(table_defs[table_name])
                             conn.commit()
                             cur.execute(f"ALTER TABLE `{db_name}`.`{table_name}` IMPORT TABLESPACE")
