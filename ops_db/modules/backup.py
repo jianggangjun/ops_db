@@ -11,6 +11,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
+import pymysql
+
 from ..lib.checker import (
     CheckResult,
     PreflightReport,
@@ -133,6 +135,181 @@ def _parse_backup_timestamp(backup_dir: str) -> Optional[str]:
 
 
 # ---------------------------------------------------------------------------
+# 备份权限检查
+# ---------------------------------------------------------------------------
+
+def _check_backup_privileges(
+    host: str,
+    port: int,
+    user: str,
+    password: Optional[str] = None,
+) -> tuple[bool, str]:
+    """
+    检查 MySQL 用户是否具备备份所需权限。
+
+    所需权限: RELOAD, LOCK TABLES, REPLICATION CLIENT
+
+    :return (success, message)
+    """
+    required_privs = {"RELOAD", "LOCK TABLES", "REPLICATION CLIENT"}
+    granted_privs = set()
+    missing_privs = set()
+
+    try:
+        import os as _os
+        pwd = password or _os.getenv("MYSQL_PASSWORD")
+        conn = pymysql.connect(
+            host=host,
+            port=port,
+            user=user,
+            password=pwd,
+            charset="utf8mb4",
+            connect_timeout=10,
+        )
+        try:
+            with conn.cursor() as cur:
+                cur.execute("SHOW GRANTS")
+                rows = cur.fetchall()
+                logger.debug(f"当前用户权限: {rows}")
+
+                # 解析权限列表
+                for row in rows:
+                    grant_sql = row[0]
+                    # 匹配 PRIVILEGES LIKE 'Reload' 等格式
+                    import re as _re
+                    priv_matches = _re.findall(r"GRANT (.+?) ON", grant_sql, _re.IGNORECASE)
+                    for priv_str in priv_matches:
+                        # 去除 ALL PRIVILEGES 特殊处理
+                        if "ALL PRIVILEGES" in priv_str.upper():
+                            granted_privs.update({"RELOAD", "LOCK TABLES", "REPLICATION CLIENT"})
+                        else:
+                            # 提取各权限名
+                            for p in required_privs:
+                                if p.upper().replace(" ", "_") in priv_str.upper().replace(" ", "_"):
+                                    granted_privs.add(p)
+        finally:
+            conn.close()
+    except pymysql.err.OperationalError as e:
+        return False, f"无法连接 MySQL [{host}:{port}]: {e}"
+
+    missing_privs = required_privs - granted_privs
+    if missing_privs:
+        grant_sql = (
+            f"GRANT {', '.join(sorted(required_privs))} ON *.* TO '{user}'@'%"
+            if user != "root"
+            else f"GRANT {', '.join(sorted(required_privs))} ON *.* TO '{user}'@'localhost'"
+        )
+        msg = (
+            f"权限不足！缺少以下权限: {', '.join(sorted(missing_privs))}\n"
+            f"\n请执行以下 SQL 授权后重试:\n"
+            f"  {grant_sql};\n"
+            f"  FLUSH PRIVILEGES;"
+        )
+        logger.error(msg)
+        return False, msg
+
+    logger.info(f"权限检查通过，用户 '{user}' 具备所需备份权限")
+    return True, "权限检查通过"
+
+
+# ---------------------------------------------------------------------------
+# 备份验证
+# ---------------------------------------------------------------------------
+
+def _verify_backup(
+    backup_dir: str,
+    backup_type: str,  # full / incr / dump
+) -> tuple[bool, str]:
+    """
+    验证备份完整性。
+
+    - full: 使用 xtrabackup --prepare 验证（prepare 后才能恢复）
+    - incr: 依次 prepare base + incr 验证
+    - dump: 使用 grep 统计 SQL 文件结构标记
+
+    :return (success, message)
+    """
+    if backup_type in ("full", "incr"):
+        # 读取元数据获取 basedir（增量备份需要）
+        meta = _read_backup_meta(backup_dir)
+        basedir = meta.get("basedir")
+
+        if backup_type == "incr" and basedir:
+            # 增量备份验证：先 prepare base，再 apply-log incr
+            logger.info(f"验证增量备份，先 prepare 全量: {basedir}")
+            cmd_base = f"xtrabackup --prepare --apply-log-only --target-dir={basedir}"
+            logger.info(f"执行: {cmd_base}")
+            try:
+                cp = subprocess.run(cmd_base, shell=True, timeout=600, capture_output=True, text=True)
+                if cp.returncode != 0:
+                    return False, f"全量备份 prepare 失败: {cp.stderr[:500]}"
+            except Exception as e:
+                return False, f"全量备份 prepare 异常: {e}"
+
+            logger.info(f"验证增量备份 apply-log: {backup_dir}")
+            cmd_incr = f"xtrabackup --prepare --target-dir={basedir} --incremental-dir={backup_dir}"
+            logger.info(f"执行: {cmd_incr}")
+            try:
+                cp = subprocess.run(cmd_incr, shell=True, timeout=600, capture_output=True, text=True)
+                if cp.returncode != 0:
+                    return False, f"增量备份 apply-log 失败: {cp.stderr[:500]}"
+            except Exception as e:
+                return False, f"增量备份 apply-log 异常: {e}"
+        else:
+            # 全量备份验证：直接 prepare
+            cmd = f"xtrabackup --prepare --target-dir={backup_dir}"
+            logger.info(f"验证备份完整性: {cmd}")
+            try:
+                cp = subprocess.run(cmd, shell=True, timeout=600, capture_output=True, text=True)
+                if cp.returncode != 0:
+                    return False, f"备份验证失败: {cp.stderr[:500]}"
+            except subprocess.TimeoutExpired:
+                return False, "备份验证超时"
+            except Exception as e:
+                return False, f"备份验证异常: {e}"
+
+        logger.info("备份完整性验证通过")
+        return True, "备份验证通过"
+
+    elif backup_type == "dump":
+        # 逻辑备份验证：检查 SQL 文件是否包含必要的 DDL
+        sql_file = backup_dir
+        # 如果传入的是目录，尝试找到对应的 .sql 或 .sql.gz 文件
+        if os.path.isdir(backup_dir):
+            candidates = [
+                os.path.join(backup_dir, f)
+                for f in os.listdir(backup_dir)
+                if f.endswith(".sql") or f.endswith(".sql.gz")
+            ]
+            if not candidates:
+                return False, f"未找到 SQL 文件在目录: {backup_dir}"
+            sql_file = candidates[0]
+
+        if sql_file.endswith(".gz"):
+            grep_cmd = f"zgrep -c 'DROP TABLE\\|CREATE TABLE' {sql_file}"
+        else:
+            grep_cmd = f"grep -c 'DROP TABLE\\|CREATE TABLE' {sql_file}"
+
+        try:
+            cp = subprocess.run(
+                grep_cmd,
+                shell=True,
+                timeout=60,
+                capture_output=True,
+                text=True,
+            )
+            count = int(cp.stdout.strip()) if cp.stdout.strip().isdigit() else 0
+            if count == 0:
+                return False, f"SQL 文件验证失败：未找到 DROP TABLE 或 CREATE TABLE 语句"
+            logger.info(f"SQL 文件验证通过，包含 {count} 条 DDL 语句")
+            return True, f"SQL 文件验证通过 ({count} 条 DDL 语句)"
+        except Exception as e:
+            return False, f"SQL 文件验证异常: {e}"
+
+    return False, f"未知备份类型: {backup_type}"
+
+
+# ---------------------------------------------------------------------------
 # 全量备份
 # ---------------------------------------------------------------------------
 
@@ -145,6 +322,8 @@ def backup_full(
     parallel: int = 4,
     compress: bool = False,
     yes: bool = False,
+    socket: Optional[str] = None,
+    expire_days: int = 7,
 ) -> tuple[bool, str]:
     """
     全量备份（xtrabackup）。
@@ -157,6 +336,8 @@ def backup_full(
     :param parallel: 并行备份线程数
     :param compress: 是否压缩（需要 qpress）
     :param yes: 跳过确认
+    :param socket: MySQL socket 文件路径
+    :param expire_days: 备份保留天数
     :return (success, message)
     """
     dest = dest or DEFAULT_BACKUP_ROOT
@@ -175,6 +356,13 @@ def backup_full(
     if report.has_fatal:
         print(report.summary())
         return False, "前置检查失败"
+
+    # 权限检查
+    ok, priv_msg = _check_backup_privileges(host, port, user, password)
+    if not ok:
+        logger.error(f"权限检查失败: {priv_msg}")
+        return False, f"权限检查失败: {priv_msg}"
+    logger.info("备份权限检查通过")
 
     # 确认
     meta_preview = _get_backup_meta(backup_dir, "full", host, port, user, password)
@@ -199,6 +387,8 @@ def backup_full(
     ]
     if password:
         cmd_parts.append(f"--password={password}")
+    if socket:
+        cmd_parts.append(f"--socket={socket}")
     if compress:
         cmd_parts.append("--compress")
     cmd_parts.append(f"--target-dir={backup_dir}")
@@ -221,12 +411,19 @@ def backup_full(
         logger.error(f"prepare 失败: {e}")
         return False, f"备份完成但 prepare 失败: {e}"
 
+    # 备份验证
+    ok, verify_msg = _verify_backup(backup_dir, "full")
+    if not ok:
+        logger.warning(f"备份验证未通过: {verify_msg}")
+    else:
+        logger.info(f"备份验证通过: {verify_msg}")
+
     # 写元数据
     meta = _get_backup_meta(backup_dir, "full", host, port, user, password)
     _write_backup_meta(backup_dir, meta)
 
-    # 清理过期备份（默认保留 7 个全量）
-    _cleanup_old_backups(dest, keep_full=7)
+    # 清理过期备份（按天数）
+    _cleanup_old_backups(dest, expire_days=expire_days)
 
     size_gb = meta.get("data_size_gb", "?")
     print_success(backup_dir, "全量备份", f"数据大小参考: {size_gb}GB")
@@ -245,12 +442,21 @@ def backup_incr(
     dest: Optional[str] = None,
     parallel: int = 4,
     yes: bool = False,
+    socket: Optional[str] = None,
 ) -> tuple[bool, str]:
     """
     增量备份（xtrabackup --incremental）。
 
     依赖：必须有一个全量备份作为 basedir。
 
+    :param host: MySQL 主机
+    :param port: MySQL 端口
+    :param user: MySQL 用户
+    :param password: 密码
+    :param dest: 备份目标根目录
+    :param parallel: 并行线程数
+    :param yes: 跳过确认
+    :param socket: MySQL socket 文件路径
     :return (success, message)
     """
     dest = dest or DEFAULT_BACKUP_ROOT
@@ -277,6 +483,13 @@ def backup_incr(
         print(report.summary())
         return False, "前置检查失败"
 
+    # 权限检查
+    ok, priv_msg = _check_backup_privileges(host, port, user, password)
+    if not ok:
+        logger.error(f"权限检查失败: {priv_msg}")
+        return False, f"权限检查失败: {priv_msg}"
+    logger.info("备份权限检查通过")
+
     meta_preview = _get_backup_meta(incr_dir, "incr", host, port, user, password)
     print_preview("增量备份", incr_dir, meta_preview)
     print(f"  基于全量备份: {latest_full}")
@@ -288,7 +501,7 @@ def backup_incr(
 
     os.makedirs(incr_dir, exist_ok=True)
 
-    cmd = " ".join([
+    cmd_parts = [
         "xtrabackup",
         "--backup",
         "--incremental",
@@ -298,16 +511,26 @@ def backup_incr(
         f"--parallel={parallel}",
         f"--incremental-basedir={latest_full}",
         f"--target-dir={incr_dir}",
-    ])
+    ]
     if password:
-        cmd += f" --password={password}"
+        cmd_parts.append(f"--password={password}")
+    if socket:
+        cmd_parts.append(f"--socket={socket}")
 
+    cmd = " ".join(cmd_parts)
     logger.info(f"执行增量备份: {_mask_password(cmd, password)}")
 
     try:
         cp = run_command(cmd, timeout=3600)
     except Exception as e:
         return False, f"增量备份失败: {e}"
+
+    # 备份验证
+    ok, verify_msg = _verify_backup(incr_dir, "incr")
+    if not ok:
+        logger.warning(f"备份验证未通过: {verify_msg}")
+    else:
+        logger.info(f"备份验证通过: {verify_msg}")
 
     # 写元数据
     meta = _get_backup_meta(incr_dir, "incr", host, port, user, password)
@@ -348,13 +571,21 @@ def backup_dump(
     all_databases: bool = False,
     extra_args: str = "",
     yes: bool = False,
+    socket: Optional[str] = None,
 ) -> tuple[bool, str]:
     """
     逻辑备份（mysqldump）。
 
+    :param host: MySQL 主机
+    :param port: MySQL 端口
+    :param user: MySQL 用户
+    :param password: 密码
+    :param dest: 备份目标目录
     :param databases: 指定库列表，None 表示所有表
     :param all_databases: 是否备份所有库
     :param extra_args: 额外 mysqldump 参数，如 "--single-transaction"
+    :param yes: 跳过确认
+    :param socket: MySQL socket 文件路径
     :return (success, message)
     """
     dest = dest or DEFAULT_BACKUP_ROOT
@@ -395,6 +626,8 @@ def backup_dump(
     ]
     if password:
         cmd_parts.append(f"--password={password}")
+    if socket:
+        cmd_parts.append(f"--socket={socket}")
     if all_databases:
         cmd_parts.append("--all-databases")
     elif databases:
@@ -409,6 +642,13 @@ def backup_dump(
         cp = run_command(cmd, timeout=7200)
     except Exception as e:
         return False, f"逻辑备份失败: {e}"
+
+    # 备份验证
+    ok, verify_msg = _verify_backup(dump_file, "dump")
+    if not ok:
+        logger.warning(f"备份验证未通过: {verify_msg}")
+    else:
+        logger.info(f"备份验证通过: {verify_msg}")
 
     # 压缩
     gzip_file = dump_file + ".gz"
@@ -567,21 +807,33 @@ def restore_full(
 # 过期清理
 # ---------------------------------------------------------------------------
 
-def _cleanup_old_backups(dest: str, keep_full: int = 7) -> None:
-    """清理超过保留数量的全量备份。"""
+def _cleanup_old_backups(dest: str, expire_days: int = 7) -> None:
+    """
+    清理超过指定天数的全量备份目录。
+
+    :param dest: 备份根目录
+    :param expire_days: 保留天数（默认 7 天）
+    """
+    import time as _time
+
+    if not os.path.exists(dest):
+        return
+
+    cutoff = _time.time() - expire_days * 86400
     dirs = [
         os.path.join(dest, d)
         for d in os.listdir(dest)
         if os.path.isdir(os.path.join(dest, d)) and d.startswith("full_")
     ]
-    dirs.sort(key=lambda x: os.path.getmtime(x), reverse=True)
 
-    for old_dir in dirs[keep_full:]:
-        logger.info(f"清理过期全量备份: {old_dir}")
-        try:
-            run_command(f"rm -rf {old_dir}", timeout=60)
-        except Exception as e:
-            logger.warning(f"清理失败: {e}")
+    for old_dir in dirs:
+        mtime = os.path.getmtime(old_dir)
+        if mtime < cutoff:
+            logger.info(f"清理过期全量备份（超过 {expire_days} 天）: {old_dir}")
+            try:
+                run_command(f"rm -rf {old_dir}", timeout=60)
+            except Exception as e:
+                logger.warning(f"清理失败: {e}")
 
 
 # ---------------------------------------------------------------------------

@@ -89,6 +89,9 @@ def _build_parser() -> argparse.ArgumentParser:
     p_backup.add_argument("--dest", help="备份目标路径（默认 /data/backup）")
     p_backup.add_argument("--parallel", type=int, default=4, help="并行线程数")
     p_backup.add_argument("--compress", action="store_true", help="压缩备份")
+    p_backup.add_argument("--socket", help="MySQL socket 文件路径（用于本地连接）")
+    p_backup.add_argument("--expire-days", type=int, default=7,
+                          help="备份保留天数（默认 7 天）")
     p_backup.add_argument("--databases", nargs="+", help="dump 模式：指定库")
     p_backup.add_argument("--all-databases", action="store_true", help="dump 模式：所有库")
     _add_ssh_args(p_backup)
@@ -298,6 +301,8 @@ def _dispatch(args: argparse.Namespace) -> int:
             "dest": args.dest,
             "parallel": args.parallel,
             "compress": args.compress,
+            "socket": args.socket,
+            "expire_days": args.expire_days,
             "databases": args.databases,
             "all_databases": args.all_databases,
             "yes": args.yes,
