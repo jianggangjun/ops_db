@@ -1,0 +1,75 @@
+[mysqld]
+# Basic Settings
+port = {{ port }}
+basedir = /usr
+datadir = {{ datadir }}
+tmpdir = /tmp
+
+# Server ID（主从必须唯一）
+server-id = {{ server_id }}
+
+# 角色标识（方便识别）
+# role = {{ role }}
+
+# Socket
+socket = /var/lib/mysql/mysql.sock
+pid-file = /var/lib/mysql/{{ role }}.pid
+
+# Logging
+log_error = {{ logdir }}/error.log
+slow_query_log = {{ '1' if slow_query_log else '0' }}
+slow_query_log_file = {{ logdir }}/slow-query.log
+long_query_time = 2
+
+{% if binlog %}
+# Binary Log（主从复制和数据恢复必须）
+log_bin = {{ logdir }}/mysql-bin
+binlog_format = ROW
+binlog_row_image = FULL
+max_binlog_size = 256M
+binlog_expire_logs_seconds = 604800  # 7 days
+sync_binlog = 1
+{% endif %}
+
+{% if gtid_mode %}
+# GTID（更易于主从管理）
+gtid_mode = ON
+enforce_gtid_consistency = ON
+{% endif %}
+
+# Replication
+relay_log = {{ logdir }}/relay-bin
+relay_log_purge = ON
+read_only = {{ '1' if role == 'slave' else '0' }}
+super_read_only = {{ '1' if role == 'slave' else '0' }}
+
+# Performance
+max_connections = {{ max_connections }}
+innodb_buffer_pool_size = {{ innodb_buffer_pool_size }}
+innodb_log_file_size = 1G
+innodb_flush_log_at_trx_commit = 1
+innodb_flush_method = O_DIRECT
+
+{% if mysql_major_version == '5' %}
+# MySQL 5.7 兼容参数
+innodb_file_per_table = 1
+{% else %}
+# MySQL 8.x 参数
+innodb_file_per_table = ON
+{% endif %}
+
+# Character Set
+character_set_server = utf8mb4
+collation_server = utf8mb4_unicode_ci
+
+# SQL Mode
+sql_mode = STRICT_TRANS_TABLES,NO_ENGINE_SUBSTITUTION
+
+# 安全（禁止远程 root）
+{% if role == 'master' %}
+# grant-外部操作请在配置好之后手动放开
+{% endif %}
+
+{% for key, value in extra_options.items() %}
+{{ key }} = {{ value }}
+{% endfor %}
