@@ -645,7 +645,7 @@ def backup_dump(
     else:
         logger.error("逻辑备份必须指定数据库（--databases）或使用 --all-databases")
         print("错误：未指定要备份的数据库，请使用 --databases <db1,db2,...> 或 --all-databases")
-        sys.exit(1)
+        return False, "未指定要备份的数据库"
     if extra_args:
         cmd_parts.extend(extra_args.split())
 
