@@ -335,7 +335,7 @@ class SSHClient:
 
         # 1. 创建 tar 包（内存中）
         tar_buffer = io.BytesIO()
-        with tarfile.open(fileobj=tar_buffer, mode="w", format=tarfile.GZIP) as tar:
+        with tarfile.open(fileobj=tar_buffer, mode="w:gz") as tar:
             tar.add(local_dir, arcname=os.path.basename(local_dir))
         tar_buffer.seek(0)
 
@@ -493,7 +493,7 @@ def package_ops_db_for_remote() -> bytes:
     buffer = io.BytesIO()
     script_dir = Path(__file__).parent.parent
 
-    with tarfile.open(fileobj=buffer, mode="w:gz", format=tarfile.GZIP) as tar:
+    with tarfile.open(fileobj=buffer, mode="w:gz") as tar:
         # 排除 __pycache__、*.pyc、.git 等
         excludes = {
             "__pycache__", ".git", ".hermes", "logs", "*.log",
