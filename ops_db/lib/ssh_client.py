@@ -337,7 +337,7 @@ class SSHClient:
         # 1. 创建 tar 包（内存中）
         tar_buffer = io.BytesIO()
         with tarfile.open(fileobj=tar_buffer, mode="w:gz") as tar:
-            tar.add(local_dir, arcname=os.path.basename(local_dir))
+            tar.add(local_dir, arcname=".")
         tar_buffer.seek(0)
 
         # 2. 通过 stdin 发送 tar 包
