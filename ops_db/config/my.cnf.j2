@@ -2,6 +2,8 @@
 # Basic Settings
 port = {{ port }}
 basedir = /usr
+# 监听地址（主从复制需要远程访问，0.0.0.0 监听所有）
+bind-address = 0.0.0.0
 datadir = {{ datadir }}
 tmpdir = /tmp
 
