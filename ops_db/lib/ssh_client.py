@@ -140,6 +140,7 @@ class SSHClient:
         try:
             self._client.connect(**connect_kwargs)
             self._connected = True
+            self._host = host  # 保存连接目标
             logger.info(f"SSH 连接成功: {host}")
         except paramiko.AuthenticationException:
             raise SSHAuthError(f"SSH 认证失败: {user}@{host}:{port}")
@@ -216,7 +217,7 @@ class SSHClient:
             logger.debug(f"命令执行成功 ({duration_ms}ms)")
 
         return SSHResult(
-            host=self._client.getpeername()[0] if self._client else "?",
+            host=getattr(self, "_host", "?"),
             success=success,
             stdout=stdout_text,
             stderr=stderr_text,
@@ -283,7 +284,7 @@ class SSHClient:
         stderr_text = stderr_buf.getvalue().decode("utf-8", errors="replace")
 
         return SSHResult(
-            host=self._client.getpeername()[0] if self._client else "?",
+            host=getattr(self, "_host", "?"),
             success=exit_status == 0,
             stdout=stdout_text,
             stderr=stderr_text,
