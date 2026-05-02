@@ -1,0 +1,146 @@
+{
+  "version": "1.0.0",
+  "lastScanned": 1777684173253,
+  "projectRoot": "/Users/jianggangjun/shark/workspace/work/projects/ops_db",
+  "techStack": {
+    "languages": [
+      {
+        "name": "Python",
+        "version": null,
+        "confidence": "high",
+        "markers": [
+          "requirements.txt"
+        ]
+      }
+    ],
+    "frameworks": [],
+    "packageManager": "pip",
+    "runtime": null
+  },
+  "build": {
+    "buildCommand": null,
+    "testCommand": null,
+    "lintCommand": null,
+    "devCommand": null,
+    "scripts": {}
+  },
+  "conventions": {
+    "namingStyle": null,
+    "importStyle": null,
+    "testPattern": null,
+    "fileOrganization": null
+  },
+  "structure": {
+    "isMonorepo": false,
+    "workspaces": [],
+    "mainDirectories": [
+      "docs"
+    ],
+    "gitBranches": {
+      "defaultBranch": "main",
+      "branchingStrategy": null
+    }
+  },
+  "customNotes": [],
+  "directoryMap": {
+    "__pycache__": {
+      "path": "__pycache__",
+      "purpose": null,
+      "fileCount": 1,
+      "lastAccessed": 1777684173240,
+      "keyFiles": [
+        "ops_db.cpython-312.pyc"
+      ]
+    },
+    "docs": {
+      "path": "docs",
+      "purpose": "Documentation",
+      "fileCount": 1,
+      "lastAccessed": 1777684173242,
+      "keyFiles": [
+        "03-备份恢复使用指南.md"
+      ]
+    },
+    "ops_db": {
+      "path": "ops_db",
+      "purpose": null,
+      "fileCount": 3,
+      "lastAccessed": 1777684173243,
+      "keyFiles": [
+        "__init__.py",
+        "__main__.py"
+      ]
+    },
+    "ops_db/config": {
+      "path": "ops_db/config",
+      "purpose": "Configuration files",
+      "fileCount": 1,
+      "lastAccessed": 1777684173244,
+      "keyFiles": [
+        "my.cnf.j2"
+      ]
+    },
+    "ops_db/lib": {
+      "path": "ops_db/lib",
+      "purpose": "Library code",
+      "fileCount": 7,
+      "lastAccessed": 1777684173245,
+      "keyFiles": [
+        "__init__.py",
+        "checker.py",
+        "config_gen.py"
+      ]
+    }
+  },
+  "hotPaths": [
+    {
+      "path": "ops_db/__main__.py",
+      "accessCount": 8,
+      "lastAccessed": 1777685179339,
+      "type": "directory"
+    },
+    {
+      "path": "ops_db/modules/replicate.py",
+      "accessCount": 5,
+      "lastAccessed": 1777685150553,
+      "type": "file"
+    },
+    {
+      "path": "ops_db/lib/ssh_client.py",
+      "accessCount": 3,
+      "lastAccessed": 1777684660041,
+      "type": "file"
+    },
+    {
+      "path": "ops_db/modules/install.py",
+      "accessCount": 3,
+      "lastAccessed": 1777684660978,
+      "type": "file"
+    },
+    {
+      "path": "ops_db/lib/checker.py",
+      "accessCount": 2,
+      "lastAccessed": 1777684660485,
+      "type": "file"
+    },
+    {
+      "path": "ops_db/lib/config_gen.py",
+      "accessCount": 2,
+      "lastAccessed": 1777684926604,
+      "type": "file"
+    },
+    {
+      "path": "ops_db/modules",
+      "accessCount": 1,
+      "lastAccessed": 1777684428506,
+      "type": "directory"
+    },
+    {
+      "path": "ops_db/config/my.cnf.j2",
+      "accessCount": 1,
+      "lastAccessed": 1777684671821,
+      "type": "file"
+    }
+  ],
+  "userDirectives": []
+}

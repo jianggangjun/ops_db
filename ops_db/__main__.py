@@ -131,9 +131,7 @@ def _build_parser() -> argparse.ArgumentParser:
     p_replicate.add_argument("--repl-user", default="repl")
     p_replicate.add_argument("--repl-password", help="复制账户密码（建议用环境变量）")
     p_replicate.add_argument("--repl-host", default="%", help="复制账户允许的 host")
-    p_replicate.add_argument("--ssh-user", default="root", help="SSH 用户（用于远程配置）")
-    p_replicate.add_argument("--ssh-password", metavar="PASS", help="SSH 密码")
-    p_replicate.add_argument("--ssh-key", metavar="FILE", help="SSH 私钥路径")
+    _add_ssh_args(p_replicate)
 
     # ── rebuild ──────────────────────────────────────────────────────────────
     p_rebuild = subparsers.add_parser("rebuild", help="备库重搭")
@@ -445,6 +443,11 @@ def _dispatch(args: argparse.Namespace) -> int:
             "repl_password": args.repl_password,
             "repl_host": args.repl_host,
             "yes": args.yes,
+            "ssh_host": getattr(args, "ssh_host", None),
+            "ssh_port": getattr(args, "ssh_port", 22),
+            "ssh_user": getattr(args, "ssh_user", "root"),
+            "ssh_password": getattr(args, "ssh_password", None),
+            "ssh_key": getattr(args, "ssh_key", None),
         }
         success, msg = setup_replication(**module_kwargs)
 

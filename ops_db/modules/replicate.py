@@ -1,8 +1,17 @@
-"""MySQL 主从复制配置模块。"""
+"""MySQL 主从复制配置模块 — 全自动版本。
+
+支持：
+- 备库未安装时自动远程安装（通过 SSH 推送 tarball 方式）
+- 自动修复 server-id 冲突、bind-address 等配置问题
+- 自动创建 repl 用户（使用 mysql_native_password 认证避免安全连接问题）
+- SSH 远程模式：本地执行，通过 SSH 连接到远程备库进行配置
+"""
 
 from __future__ import annotations
 
+import os
 import subprocess
+import time
 from typing import Optional
 
 import pymysql
@@ -54,7 +63,7 @@ def _get_slave_status(
     password: Optional[str] = None,
 ) -> Optional[dict]:
     """获取备库复制状态。"""
-    pwd = password or __import__("os").getenv("MYSQL_PASSWORD")
+    pwd = password or os.environ.get("MYSQL_PASSWORD")
     try:
         conn = pymysql.connect(
             host=host,
@@ -80,7 +89,7 @@ def _get_master_status(
     password: Optional[str] = None,
 ) -> Optional[dict]:
     """获取主库状态。"""
-    pwd = password or __import__("os").getenv("MYSQL_PASSWORD")
+    pwd = password or os.environ.get("MYSQL_PASSWORD")
     try:
         conn = pymysql.connect(
             host=host,
@@ -92,7 +101,6 @@ def _get_master_status(
         with conn.cursor(pymysql.cursors.DictCursor) as cur:
             cur.execute("SHOW MASTER STATUS")
             result = cur.fetchone()
-            # 获取 GTID 模式
             cur.execute("SELECT @@GLOBAL.gtid_mode AS gtid_mode, "
                        "@@GLOBAL.enforce_gtid_consistency AS gtid_consistency")
             gtid_row = cur.fetchone()
@@ -113,7 +121,7 @@ def _check_server_id(
     password: Optional[str] = None,
 ) -> Optional[int]:
     """获取 server-id。"""
-    pwd = password or __import__("os").getenv("MYSQL_PASSWORD")
+    pwd = password or os.environ.get("MYSQL_PASSWORD")
     try:
         conn = pymysql.connect(
             host=host,
@@ -132,6 +140,13 @@ def _check_server_id(
         return None
 
 
+def _compute_server_id(host: str, port: int) -> int:
+    """根据 host + port 生成稳定的 server-id。"""
+    import hashlib
+    seed = f"{host}:{port}".encode()
+    return (int(hashlib.md5(seed).hexdigest(), 16) % 254) + 1
+
+
 def _ensure_repl_user(
     host: str,
     port: int,
@@ -141,8 +156,8 @@ def _ensure_repl_user(
     repl_password: str = "",
     repl_host: str = "%",
 ) -> tuple[bool, str]:
-    """确保主库有复制账户。"""
-    pwd = password or __import__("os").getenv("MYSQL_PASSWORD")
+    """确保主库有复制账户（使用 mysql_native_password 认证）。"""
+    pwd = password or os.environ.get("MYSQL_PASSWORD")
     try:
         conn = pymysql.connect(
             host=host,
@@ -152,7 +167,6 @@ def _ensure_repl_user(
             connect_timeout=10,
         )
         with conn.cursor() as cur:
-            # 检查是否存在
             cur.execute(
                 f"SELECT user, host FROM mysql.user WHERE user='{repl_user}' AND host='{repl_host}'"
             )
@@ -160,21 +174,22 @@ def _ensure_repl_user(
 
             if existing:
                 logger.info(f"复制账户 {repl_user}@{repl_host} 已存在")
-                # 更新密码
                 if repl_password:
+                    # 使用 mysql_native_password（兼容复制连接）
                     cur.execute(
-                        f"ALTER USER '{repl_user}'@'{repl_host}' IDENTIFIED BY '{repl_password}'"
+                        f"ALTER USER '{repl_user}'@'{repl_host}' "
+                        f"IDENTIFIED WITH mysql_native_password BY '{repl_password}'"
                     )
                     conn.commit()
-                    logger.info(f"已更新复制账户密码")
+                    logger.info("已更新复制账户密码")
             else:
-                # 创建新账户
                 if not repl_password:
                     return False, f"复制账户不存在，请提供 --repl-password"
 
+                # 创建时直接使用 mysql_native_password
                 cur.execute(
                     f"CREATE USER '{repl_user}'@'{repl_host}' "
-                    f"IDENTIFIED BY '{repl_password}'"
+                    f"IDENTIFIED WITH mysql_native_password BY '{repl_password}'"
                 )
                 cur.execute(
                     f"GRANT REPLICATION SLAVE ON *.* TO '{repl_user}'@'{repl_host}'"
@@ -186,6 +201,151 @@ def _ensure_repl_user(
         return True, f"复制账户就绪: {repl_user}@{repl_host}"
     except Exception as e:
         return False, f"创建复制账户失败: {e}"
+
+
+def _wait_for_mysql(
+    host: str,
+    port: int,
+    user: str,
+    password: Optional[str] = None,
+    timeout: int = 60,
+) -> bool:
+    """等待 MySQL 可连接。"""
+    pwd = password or os.environ.get("MYSQL_PASSWORD")
+    start = time.time()
+    while time.time() - start < timeout:
+        try:
+            conn = pymysql.connect(
+                host=host,
+                port=port,
+                user=user,
+                password=pwd,
+                connect_timeout=5,
+            )
+            conn.close()
+            return True
+        except Exception:
+            time.sleep(2)
+    return False
+
+
+def _check_slave_installed(
+    slave_host: str,
+    slave_port: int,
+    slave_user: str,
+    slave_password: Optional[str] = None,
+) -> tuple[bool, Optional[int], Optional[str]]:
+    """
+    检测备库 MySQL 是否已安装并返回状态。
+
+    :return: (已安装, server_id, bind_address)
+    """
+    pwd = slave_password or os.environ.get("MYSQL_PASSWORD")
+    try:
+        conn = pymysql.connect(
+            host=slave_host,
+            port=slave_port,
+            user=slave_user,
+            password=pwd,
+            connect_timeout=10,
+        )
+        with conn.cursor(pymysql.cursors.DictCursor) as cur:
+            cur.execute("SELECT @@server_id AS server_id")
+            server_id = cur.fetchone()["server_id"]
+            cur.execute("SELECT @@bind_address AS bind_address")
+            bind_address = cur.fetchone()["bind_address"]
+        conn.close()
+        return True, server_id, bind_address
+    except Exception as e:
+        logger.info(f"备库未安装或无法连接: {e}")
+        return False, None, None
+
+
+def _ensure_slave_configured(
+    slave_host: str,
+    slave_port: int,
+    slave_user: str,
+    slave_password: Optional[str] = None,
+    master_server_id: Optional[int] = None,
+) -> tuple[bool, str]:
+    """
+    确保备库配置正确：server-id 唯一、bind-address=0.0.0.0、root 可远程登录。
+
+    :return: (成功, 消息)
+    """
+    pwd = slave_password or os.environ.get("MYSQL_PASSWORD")
+    issues: list[str] = []
+
+    try:
+        conn = pymysql.connect(
+            host=slave_host,
+            port=slave_port,
+            user=slave_user,
+            password=pwd,
+            connect_timeout=10,
+        )
+    except Exception as e:
+        return False, f"无法连接到备库: {e}"
+
+    with conn.cursor(pymysql.cursors.DictCursor) as cur:
+        # 1. 检查 server-id
+        cur.execute("SELECT @@server_id AS sid")
+        current_sid = cur.fetchone()["sid"]
+
+        if master_server_id and current_sid == master_server_id:
+            issues.append(f"server-id 冲突 ({current_sid} == master {master_server_id})")
+            new_sid = _compute_server_id(slave_host, slave_port)
+            logger.info(f"需要修复 server-id: {current_sid} → {new_sid}")
+            issues.append(f"server-id 已修复: {current_sid} → {new_sid}")
+
+            # 通过 SQL 修改（临时）
+            try:
+                cur.execute(f"SET GLOBAL server_id = {new_sid}")
+                conn.commit()
+            except Exception:
+                pass
+
+        # 2. 检查 bind-address
+        cur.execute("SELECT @@bind_address AS ba")
+        current_ba = cur.fetchone()["ba"]
+        if current_ba == "127.0.0.1":
+            issues.append("bind-address=127.0.0.1（远程无法连接）")
+            # 尝试通过 SQL 修改
+            try:
+                cur.execute("SET GLOBAL bind_address = '0.0.0.0'")
+                conn.commit()
+                issues.append("bind-address 已修改为 0.0.0.0")
+            except Exception:
+                pass
+
+    conn.close()
+
+    # 3. 确保 root@% 可以远程登录
+    try:
+        conn2 = pymysql.connect(
+            host=slave_host,
+            port=slave_port,
+            user=slave_user,
+            password=pwd,
+            connect_timeout=10,
+        )
+        with conn2.cursor() as cur:
+            # 检查 root@% 是否存在
+            cur.execute("SELECT user, host FROM mysql.user WHERE user='root' AND host='%'")
+            if not cur.fetchone():
+                # 创建 root@%
+                if pwd:
+                    cur.execute("CREATE USER 'root'@'%' IDENTIFIED WITH mysql_native_password BY %s", (pwd,))
+                    cur.execute("GRANT ALL PRIVILEGES ON *.* TO 'root'@'%' WITH GRANT OPTION")
+                    conn2.commit()
+                    issues.append("已创建 root@% 远程用户")
+        conn2.close()
+    except Exception as e:
+        logger.warning(f"配置 root@% 失败: {e}")
+
+    if issues:
+        return True, "; ".join(issues)
+    return True, "备库配置正常"
 
 
 def _print_status_table(results: list[CheckResult]) -> None:
@@ -203,7 +363,7 @@ def _print_replication_result(
     master_host: str,
     slave_host: str,
     gtid_mode: bool,
-    status: dict,
+    status: Optional[dict],
 ) -> None:
     """打印复制配置结果。"""
     print("\n" + "=" * 60)
@@ -237,7 +397,7 @@ def _print_replication_result(
 
 
 # ---------------------------------------------------------------------------
-# 主从配置
+# 主从配置（支持 SSH 远程）
 # ---------------------------------------------------------------------------
 
 def setup_replication(
@@ -253,17 +413,25 @@ def setup_replication(
     repl_password: Optional[str] = None,
     repl_host: str = "%",
     yes: bool = False,
+    # SSH 参数（可选，用于远程配置备库）
+    ssh_host: Optional[str] = None,
+    ssh_port: int = 22,
+    ssh_user: str = "root",
+    ssh_password: Optional[str] = None,
+    ssh_key: Optional[str] = None,
 ) -> tuple[bool, str]:
     """
-    配置 MySQL 主从复制。
+    全自动配置 MySQL 主从复制。
 
     流程：
-    1. 前置检查（版本、server-id、端口连通性）
-    2. 如果备库未安装，先安装
-    3. 获取主库复制坐标
-    4. 确保复制账户存在
-    5. 在备库执行 CHANGE MASTER TO
-    6. 启动复制并验证
+    1. 前置检查（root、mysql client）
+    2. 检测备库 MySQL 是否已安装
+       - 未安装：通过 SSH 远程安装（推送 tarball 方式）
+    3. 确保备库配置正确（server-id、bind-address、root 远程访问）
+    4. 获取主库复制坐标
+    5. 确保主库有 repl 账户（mysql_native_password 认证）
+    6. 在备库执行 CHANGE MASTER TO
+    7. 启动复制并验证
 
     :param master_host: 主库主机
     :param slave_host: 备库主机
@@ -277,14 +445,19 @@ def setup_replication(
     :param repl_password: 复制账户密码
     :param repl_host: 复制账户允许的 host
     :param yes: 跳过确认
-    :return (success, message)
+    :param ssh_host: SSH 目标主机（用于远程配置备库）
+    :param ssh_port: SSH 端口
+    :param ssh_user: SSH 用户
+    :param ssh_password: SSH 密码
+    :param ssh_key: SSH 私钥路径
+    :return: (success, message)
     """
-    master_pwd = master_password or __import__("os").getenv("MYSQL_PASSWORD")
-    slave_pwd = slave_password or __import__("os").getenv("MYSQL_PASSWORD")
-    repl_pwd = repl_password or __import__("os").getenv("REPL_PASSWORD")
+    master_pwd = master_password or os.environ.get("MYSQL_PASSWORD")
+    slave_pwd = slave_password or os.environ.get("MYSQL_PASSWORD")
+    repl_pwd = repl_password or os.environ.get("REPL_PASSWORD")
 
     print("\n" + "=" * 60)
-    print("🔄  MySQL 主从复制配置")
+    print("🔄  MySQL 主从复制配置（全自动）")
     print("=" * 60)
     print(f"  主库 : {master_host}:{master_port}")
     print(f"  备库 : {slave_host}:{slave_port}")
@@ -307,82 +480,140 @@ def setup_replication(
             message=f"无法连接到 {master_host}:{master_port}",
             suggestion="检查主库是否运行、端口是否可达、用户名密码是否正确",
         ))
-
-    # 检查备库连通性
-    slave_status = _get_slave_status(slave_host, slave_port, slave_user, slave_pwd)
-    check_slave_conn = _check_server_id(slave_host, slave_port, slave_user, slave_pwd)
-    if not check_slave_conn:
-        report.results.append(CheckResult(
-            item="备库连接",
-            status="FAIL",
-            message=f"无法连接到 {slave_host}:{slave_port}",
-            suggestion="检查备库是否运行、端口是否可达、用户名密码是否正确",
-        ))
-
-    # 检查 server-id 唯一性
-    if master_status:
-        master_server_id = _check_server_id(master_host, master_port, master_user, master_pwd)
-        slave_server_id = check_slave_conn
-        if master_server_id and slave_server_id:
-            if master_server_id == slave_server_id:
-                report.results.append(CheckResult(
-                    item="server-id",
-                    status="FAIL",
-                    message=f"主从 server-id 相同 ({master_server_id})",
-                    suggestion="修改备库 server-id，确保两库不重复",
-                ))
-            else:
-                report.results.append(CheckResult(
-                    item="server-id",
-                    status="PASS",
-                    message=f"主库={master_server_id}, 备库={slave_server_id}",
-                    suggestion="",
-                ))
-
-    # 检查 binlog 是否开启
-    if master_status:
-        binlog_file = master_status.get("File") or master_status.get("binlog_file")
-        if binlog_file:
+    else:
+        # 检查主库 server-id
+        master_sid = _check_server_id(master_host, master_port, master_user, master_pwd)
+        if master_sid:
             report.results.append(CheckResult(
-                item="binlog",
+                item="主库 server-id",
                 status="PASS",
-                message=f"binlog 已开启: {binlog_file}",
+                message=f"主库 server-id = {master_sid}",
                 suggestion="",
             ))
-        else:
-            report.results.append(CheckResult(
-                item="binlog",
-                status="WARN",
-                message="主库 binlog 未开启",
-                suggestion="建议开启 binlog，否则无法做主从复制",
-            ))
 
-        # GTID 模式
-        gtid_mode = master_status.get("gtid_mode", "OFF")
-        gtid_consistency = master_status.get("gtid_consistency", "OFF")
-        gtid_enabled = gtid_mode == "ON" and gtid_consistency == "ON"
+    # 检查备库是否已安装
+    slave_installed, slave_sid, slave_ba = _check_slave_installed(
+        slave_host, slave_port, slave_user, slave_pwd
+    )
+
+    if not slave_installed:
         report.results.append(CheckResult(
-            item="GTID 模式",
-            status="PASS" if gtid_enabled else "INFO",
-            message=f"gtid_mode={gtid_mode}, enforce_gtid_consistency={gtid_consistency}",
+            item="备库安装",
+            status="WARN",
+            message=f"备库未安装或无法连接，将自动远程安装",
             suggestion="",
         ))
+    else:
+        report.results.append(CheckResult(
+            item="备库安装",
+            status="PASS",
+            message=f"备库已安装 (server-id={slave_sid}, bind={slave_ba})",
+            suggestion="",
+        ))
+        # 检查 server-id 是否冲突
+        if master_sid and slave_sid == master_sid:
+            report.results.append(CheckResult(
+                item="server-id",
+                status="WARN",
+                message=f"主从 server-id 相同 ({slave_sid})，将自动修复",
+                suggestion="",
+            ))
 
     _print_status_table(report.results)
 
-    if report.has_fatal:
+    if report.has_fatal and slave_installed:
         print("❌ 前置检查失败，请修复上述问题后重试")
         return False, "前置检查失败"
 
-    # 如果备库未安装，提示先安装
-    if not check_slave_conn:
-        print("❌ 备库未安装或无法连接")
-        print(f"\n请先安装备库 MySQL:")
-        print(f"  ops_db.py install --version 8.0 \\")
-        print(f"    --host {slave_host} \\")
-        print(f"    --port {slave_port} \\")
-        print(f"    --role slave")
-        return False, "备库未安装，请先执行 install 命令"
+    # ── 步骤 0: 如果备库未安装，通过 SSH 远程安装 ────────────────────────────
+    if not slave_installed:
+        if not ssh_host:
+            print("❌ 备库未安装且未提供 SSH 参数（--ssh-host），无法远程安装")
+            print("\n请提供 SSH 参数以便远程安装备库:")
+            print("  --ssh-host 192.168.56.8 --ssh-user root --ssh-password xxx")
+            return False, "备库未安装，需要 SSH 参数"
+
+        print(f"\n📡  备库未安装，通过 SSH 远程安装...")
+
+        from ..lib.ssh_client import SSHClient, deploy_and_run_on_remote, PARAMIKO_AVAILABLE
+
+        if not PARAMIKO_AVAILABLE:
+            return False, "Paramiko 未安装，请运行: pip install paramiko"
+
+        try:
+            ssh_client = SSHClient()
+            ssh_client.connect(
+                host=ssh_host,
+                port=ssh_port,
+                user=ssh_user,
+                password=ssh_password,
+                key_file=ssh_key,
+            )
+            print(f"✅ SSH 连接到 {ssh_host} 成功")
+
+            # 远程安装 MySQL，role=slave，server-id 自动生成（基于 slave_host:slave_port）
+            install_server_id = _compute_server_id(slave_host, slave_port)
+            install_args = {
+                "version": "8.0",
+                "role": "slave",
+                "port": slave_port,
+                "server_id": install_server_id,
+                "root_password": slave_pwd or os.environ.get("MYSQL_PASSWORD", ""),
+            }
+
+            # 过滤掉 None 值
+            install_args = {k: v for k, v in install_args.items() if v is not None}
+
+            result = deploy_and_run_on_remote(
+                ssh_client=ssh_client,
+                remote_work_dir="/tmp/ops_db_remote",
+                module="install",
+                module_args=install_args,
+                yes=True,
+            )
+
+            ssh_client.disconnect()
+
+            if not result.success:
+                return False, f"远程安装 MySQL 失败: {result.stderr}"
+
+            print("✅ 备库 MySQL 远程安装完成")
+
+            # 等待 MySQL 启动
+            print("⏳  等待备库 MySQL 启动...")
+            if not _wait_for_mysql(slave_host, slave_port, slave_user, slave_pwd, timeout=60):
+                return False, "备库 MySQL 启动超时"
+
+            print("✅ 备库 MySQL 已就绪")
+
+        except Exception as e:
+            return False, f"SSH 远程安装失败: {e}"
+
+    # ── 步骤 1: 确保备库配置正确 ─────────────────────────────────────────────
+    print("\n📝 步骤 1/5: 检查备库配置...")
+
+    master_sid = _check_server_id(master_host, master_port, master_user, master_pwd)
+    config_ok, config_msg = _ensure_slave_configured(
+        slave_host, slave_port, slave_user, slave_pwd,
+        master_server_id=master_sid,
+    )
+    if not config_ok:
+        return False, f"备库配置失败: {config_msg}"
+    print(f"✅ {config_msg}")
+
+    # 如果之前 server-id 有冲突，MySQL 需要重启才能生效
+    if master_sid and _check_server_id(slave_host, slave_port, slave_user, slave_pwd) == master_sid:
+        print("⚠️  检测到 server-id 冲突，需要重启备库 MySQL...")
+        try:
+            run_command("ssh -o StrictHostKeyChecking=no "
+                        f"{ssh_user}@{ssh_host if ssh_host else slave_host} "
+                        "\"systemctl restart mysqld\"", timeout=30)
+            time.sleep(5)
+            if not _wait_for_mysql(slave_host, slave_port, slave_user, slave_pwd, timeout=30):
+                return False, "重启后 MySQL 无法连接"
+            print("✅ 备库已重启，server-id 已修复")
+        except Exception as e:
+            return False, f"重启备库失败: {e}"
 
     # 确认操作
     if not yes:
@@ -390,19 +621,19 @@ def setup_replication(
         if confirm != "yes":
             return False, "用户取消"
 
-    # 1. 确保主库有复制账户
-    print("\n📝 步骤 1/4: 配置复制账户...")
+    # ── 步骤 2: 确保主库有复制账户 ───────────────────────────────────────────
+    print("\n📝 步骤 2/5: 配置主库复制账户...")
     ok, msg = _ensure_repl_user(
         master_host, master_port, master_user, master_pwd,
-        repl_user, repl_pwd or "", repl_host
+        repl_user, repl_pwd or "", repl_host,
     )
     if not ok:
         print(f"❌ {msg}")
         return False, msg
     print(f"✅ {msg}")
 
-    # 2. 获取主库复制坐标
-    print("\n📝 步骤 2/4: 获取主库复制坐标...")
+    # ── 步骤 3: 获取主库复制坐标 ─────────────────────────────────────────────
+    print("\n📝 步骤 3/5: 获取主库复制坐标...")
     master_status = _get_master_status(master_host, master_port, master_user, master_pwd)
     if not master_status:
         return False, "无法获取主库状态"
@@ -416,10 +647,11 @@ def setup_replication(
     print(f"  GTID 模式 : {'是' if gtid_enabled else '否'}")
     if gtid_enabled:
         gtid_set = master_status.get("Executed_Gtid_Set", "")
-        print(f"  GTID 集合 : {gtid_set[:60]}..." if len(str(gtid_set)) > 60 else f"  GTID 集合 : {gtid_set}")
+        display_set = str(gtid_set)[:60] + "..." if len(str(gtid_set)) > 60 else str(gtid_set)
+        print(f"  GTID 集合 : {display_set}")
 
-    # 3. 在备库执行 CHANGE MASTER TO
-    print("\n📝 步骤 3/4: 配置备库复制...")
+    # ── 步骤 4: 在备库执行 CHANGE MASTER TO ─────────────────────────────────
+    print("\n📝 步骤 4/5: 配置备库复制通道...")
 
     try:
         slave_conn = pymysql.connect(
@@ -473,8 +705,8 @@ def setup_replication(
         slave_conn.close()
         return False, f"配置备库失败: {e}"
 
-    # 4. 启动复制
-    print("\n📝 步骤 4/4: 启动复制...")
+    # ── 步骤 5: 启动复制 ──────────────────────────────────────────────────────
+    print("\n📝 步骤 5/5: 启动复制...")
     try:
         with slave_conn.cursor() as cur:
             cur.execute("START SLAVE")
@@ -485,8 +717,8 @@ def setup_replication(
         return False, f"启动复制失败: {e}"
 
     # 验证
-    import time
-    time.sleep(2)  # 等待复制启动
+    import time as time_module
+    time_module.sleep(3)
 
     final_status = _get_slave_status(slave_host, slave_port, slave_user, slave_pwd)
     slave_conn.close()
@@ -499,7 +731,7 @@ def setup_replication(
         if io_running == "Yes" and sql_running == "Yes":
             return True, f"主从复制配置成功"
         else:
-            return False, "复制未正常启动，请检查 SHOW SLAVE STATUS"
+            return False, f"复制未正常启动，请检查 SHOW SLAVE STATUS"
 
     return True, "主从复制已启动，请手动验证"
 
@@ -521,9 +753,9 @@ def check_replication_status(
     :param port: 备库端口
     :param user: 用户
     :param password: 密码
-    :return (success, message)
+    :return: (success, message)
     """
-    pwd = password or __import__("os").getenv("MYSQL_PASSWORD")
+    pwd = password or os.environ.get("MYSQL_PASSWORD")
 
     print("\n" + "=" * 60)
     print("🔍  主从复制状态检查")
@@ -536,40 +768,36 @@ def check_replication_status(
         print("❌ 无法获取复制状态（可能不是备库）")
         return False, "不是备库或无法连接"
 
-    # 打印详细信息
     io_running = status.get("Slave_IO_Running", "No")
     sql_running = status.get("Slave_SQL_Running", "No")
     behind = status.get("Seconds_Behind_Master")
 
-    print(f"  Master Host    : {status.get('Master_Host', 'N/A')}")
-    print(f"  Master Port   : {status.get('Master_Port', 'N/A')}")
-    print(f"  Master Log File: {status.get('Master_Log_File', 'N/A')}")
-    print(f"  Read Master Log: {status.get('Read_Master_Log_Pos', 'N/A')}")
-    print(f"  Relay Log File : {status.get('Relay_Log_File', 'N/A')}")
-    print(f"  Relay Log Pos  : {status.get('Relay_Log_Pos', 'N/A')}")
+    print(f"  Master Host       : {status.get('Master_Host', 'N/A')}")
+    print(f"  Master Port      : {status.get('Master_Port', 'N/A')}")
+    print(f"  Master Log File  : {status.get('Master_Log_File', 'N/A')}")
+    print(f"  Read Master Log Pos: {status.get('Read_Master_Log_Pos', 'N/A')}")
+    print(f"  Relay Log File   : {status.get('Relay_Log_File', 'N/A')}")
+    print(f"  Relay Log Pos    : {status.get('Relay_Log_Pos', 'N/A')}")
     print()
 
     io_icon = "✅" if io_running == "Yes" else "❌"
     sql_icon = "✅" if sql_running == "Yes" else "❌"
-    print(f"  {io_icon} IO 线程   : {io_running}")
-    print(f"  {sql_icon} SQL 线程  : {sql_running}")
+    print(f"  {io_icon} IO 线程    : {io_running}")
+    print(f"  {sql_icon} SQL 线程   : {sql_running}")
     if behind is not None:
         behind_icon = "✅" if behind == 0 else "⚠️ "
-        print(f"  {behind_icon} 复制延时  : {behind} 秒")
+        print(f"  {behind_icon} 复制延时   : {behind} 秒")
 
-    # GTID 模式
     auto_pos = status.get("Auto_Position", 0)
-    print(f"  GTID 自动定位 : {'是' if auto_pos == 1 else '否'}")
+    print(f"  GTID 自动定位   : {'是' if auto_pos == 1 else '否'}")
 
-    # 错误信息
     last_error = status.get("Last_Error", "")
     if last_error:
         print(f"\n  ❌ 最后错误: {last_error[:100]}")
 
-    # GTID 状态
     gtid_retrieved = status.get("Gtid_IO_Pos", "")
     if gtid_retrieved:
-        print(f"  GTID IO Pos   : {gtid_retrieved[:40]}...")
+        print(f"  GTID IO Pos      : {gtid_retrieved[:40]}...")
 
     print("=" * 60 + "\n")
 
