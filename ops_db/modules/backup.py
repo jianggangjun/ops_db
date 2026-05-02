@@ -449,7 +449,9 @@ def backup_incr(
     """
     增量备份（xtrabackup --backup --incremental-basedir）。
 
-    依赖：必须有一个全量备份作为 basedir。
+    基于上一次备份（full 或 incr）进行增量备份，自动链式传递。
+
+    依赖：必须有一个备份（full 或 incr）作为 basedir。
 
     :param host: MySQL 主机
     :param port: MySQL 端口
@@ -465,11 +467,18 @@ def backup_incr(
     """
     dest = dest or DEFAULT_BACKUP_ROOT
 
-    # 查找最新的全量备份
-    latest_full = _find_latest_full_backup(dest)
-    if not latest_full:
-        logger.warning("未找到全量备份，增量备份需要先有全量备份。")
-        return False, "未找到全量备份，请先执行全量备份"
+    # 查找最新的备份（full 或 incr），作为增量起点
+    latest_backup = _find_latest_backup(dest)
+    if not latest_backup:
+        logger.warning("未找到任何备份，请先执行全量备份。")
+        return False, "未找到备份，请先执行全量备份"
+
+    # 读取上次的 LSN 信息
+    checkpoints = _parse_xtrabackup_checkpoints(latest_backup)
+    from_lsn_info = ""
+    if checkpoints:
+        from_lsn = checkpoints.get("to_lsn", "?")
+        from_lsn_info = f" (from_lsn={from_lsn})"
 
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     incr_dir = os.path.join(dest, f"incr_{timestamp}")
@@ -496,7 +505,7 @@ def backup_incr(
 
     meta_preview = _get_backup_meta(incr_dir, "incr", host, port, user, password)
     print_preview("增量备份", incr_dir, meta_preview)
-    print(f"  基于全量备份: {latest_full}")
+    print(f"  基于: {latest_backup}{from_lsn_info}")
 
     if not yes:
         confirm = input("\n确认开始增量备份？[y/N]: ").strip().lower()
@@ -509,7 +518,7 @@ def backup_incr(
         "xtrabackup",
         "--backup",
         f"--target-dir={incr_dir}",
-        f"--incremental-basedir={latest_full}",
+        f"--incremental-basedir={latest_backup}",
         f"--user={user}",
         f"--host={host}",
         f"--port={port}",
@@ -549,6 +558,40 @@ def backup_incr(
     return True, f"增量备份成功: {incr_dir}"
 
 
+def _parse_xtrabackup_checkpoints(backup_dir: str) -> Optional[dict]:
+    """解析 xtrabackup_checkpoints 文件，返回 LSN 信息。"""
+    checkpoints_file = os.path.join(backup_dir, "xtrabackup_checkpoints")
+    if not os.path.exists(checkpoints_file):
+        return None
+    try:
+        with open(checkpoints_file, "r") as f:
+            content = f.read()
+        result: dict[str, str] = {}
+        for line in content.strip().split("\n"):
+            if "=" in line:
+                key, value = line.split("=", 1)
+                result[key.strip()] = value.strip()
+        return result
+    except Exception as e:
+        logger.warning(f"解析 checkpoints 失败: {e}")
+        return None
+
+
+def _find_latest_backup(dest: str) -> Optional[str]:
+    """查找最新的备份目录（full 或 incr）。"""
+    if not os.path.exists(dest):
+        return None
+    dirs = [
+        os.path.join(dest, d)
+        for d in os.listdir(dest)
+        if os.path.isdir(os.path.join(dest, d)) and (d.startswith("full_") or d.startswith("incr_"))
+    ]
+    if not dirs:
+        return None
+    dirs.sort(key=lambda x: os.path.getmtime(x), reverse=True)
+    return dirs[0]
+
+
 def _find_latest_full_backup(dest: str) -> Optional[str]:
     """查找最新的全量备份目录。"""
     if not os.path.exists(dest):
@@ -560,7 +603,6 @@ def _find_latest_full_backup(dest: str) -> Optional[str]:
     ]
     if not dirs:
         return None
-    # 按修改时间排序
     dirs.sort(key=lambda x: os.path.getmtime(x), reverse=True)
     return dirs[0]
 

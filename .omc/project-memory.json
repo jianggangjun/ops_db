@@ -100,6 +100,12 @@
       "type": "directory"
     },
     {
+      "path": "ops_db/modules/backup.py",
+      "accessCount": 6,
+      "lastAccessed": 1777689667292,
+      "type": "directory"
+    },
+    {
       "path": "ops_db/modules/replicate.py",
       "accessCount": 5,
       "lastAccessed": 1777685150553,
@@ -130,6 +136,18 @@
       "type": "file"
     },
     {
+      "path": "",
+      "accessCount": 2,
+      "lastAccessed": 1777686030422,
+      "type": "directory"
+    },
+    {
+      "path": "docs/03-备份恢复使用指南.md",
+      "accessCount": 2,
+      "lastAccessed": 1777686040503,
+      "type": "file"
+    },
+    {
       "path": "ops_db/modules",
       "accessCount": 1,
       "lastAccessed": 1777684428506,
@@ -139,6 +157,12 @@
       "path": "ops_db/config/my.cnf.j2",
       "accessCount": 1,
       "lastAccessed": 1777684671821,
+      "type": "file"
+    },
+    {
+      "path": "ops_db/modules/restore.py",
+      "accessCount": 1,
+      "lastAccessed": 1777686041081,
       "type": "file"
     }
   ],
