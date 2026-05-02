@@ -227,15 +227,24 @@ def _run_remote(
         client = SSHClient()
         client.connect(**ssh_kwargs)
 
-        # 过滤掉 SSH 自身的参数，只传模块需要的
-        remote_kwargs = {k: v for k, v in module_kwargs.items()
-                          if not k.startswith("ssh_")}
+        # 过滤掉 SSH 自身的参数和顶级参数，只传模块需要的
+        # yes 是顶级参数，需要在 subcommand 之前传递
+        remote_kwargs = {}
+        yes_flag = False
+        for k, v in module_kwargs.items():
+            if k.startswith("ssh_"):
+                continue
+            if k == "yes":
+                yes_flag = bool(v)
+                continue
+            remote_kwargs[k] = v
 
         result = deploy_and_run_on_remote(
             ssh_client=client,
             remote_work_dir=remote_dir,
             module=module,
             module_args=remote_kwargs,
+            yes=yes_flag,
         )
 
         # 打印远程输出

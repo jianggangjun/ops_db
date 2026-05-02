@@ -508,7 +508,7 @@ def package_ops_db_for_remote() -> bytes:
                 rel_str = str(rel)
                 if any(ex in rel_str for ex in excludes):
                     continue
-                tar.add(item, arcname=rel)
+                tar.add(item, arcname=f"ops_db/{rel}")
 
     buffer.seek(0)
     return buffer.getvalue()
@@ -520,6 +520,7 @@ def deploy_and_run_on_remote(
     command: str = "",
     module: Optional[str] = None,
     module_args: Optional[dict] = None,
+    yes: bool = False,
 ) -> SSHResult:
     """
     将 ops_db 打包上传到远程主机并执行。
@@ -543,7 +544,15 @@ def deploy_and_run_on_remote(
     channel.exec_command(f"cd {remote_work_dir} && tar -xzf -")
 
     channel.set_combine_stderr(True)
-    channel.send(tar_data)
+
+    # channel.send() 可能不一次性发送完所有数据，需要循环
+    n = 0
+    while n < len(tar_data):
+        sent = channel.send(tar_data[n:])
+        if sent == 0:
+            break
+        n += sent
+
     channel.shutdown_write()
 
     exit_status = channel.recv_exit_status()
@@ -557,21 +566,30 @@ def deploy_and_run_on_remote(
     if command:
         full_cmd = f"cd {remote_work_dir} && {command}"
     elif module:
-        args_str = ""
+        # CLI 参数名映射（内部名 → CLI 参数名）
+        CLI_ARG_MAP = {
+            "role": "type",
+            "server_id": "server-id",
+        }
+
         if module_args:
             arg_parts = []
             for k, v in module_args.items():
+                cli_name = CLI_ARG_MAP.get(k, k)
                 if isinstance(v, bool):
                     if v:
-                        arg_parts.append(f"--{k}")
+                        arg_parts.append(f"--{cli_name}")
+                elif v is None:
+                    pass  # 跳过 None 值
                 elif isinstance(v, list):
                     for item in v:
-                        arg_parts.append(f"--{k}={item}")
+                        arg_parts.append(f"--{cli_name}={item}")
                 else:
-                    arg_parts.append(f"--{k}={v}")
+                    arg_parts.append(f"--{cli_name}={v}")
             args_str = " ".join(arg_parts)
 
-        full_cmd = f"cd {remote_work_dir} && python3 ops_db.py {module} {args_str}"
+        yes_flag = " --yes" if yes else ""
+        full_cmd = f"cd {remote_work_dir} && PYTHONPATH={remote_work_dir} python3 -m ops_db{yes_flag} {module} {args_str}"
     else:
         raise ValueError("必须指定 command 或 module")
 
