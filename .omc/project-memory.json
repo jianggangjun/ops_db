@@ -95,62 +95,62 @@
   "hotPaths": [
     {
       "path": "ops_db/__main__.py",
-      "accessCount": 13,
-      "lastAccessed": 1777690118921,
+      "accessCount": 21,
+      "lastAccessed": 1777692815459,
       "type": "directory"
     },
     {
       "path": "ops_db/modules/restore.py",
-      "accessCount": 9,
-      "lastAccessed": 1777690052198,
+      "accessCount": 10,
+      "lastAccessed": 1777690642053,
       "type": "file"
     },
     {
       "path": "ops_db/modules/backup.py",
-      "accessCount": 6,
-      "lastAccessed": 1777689667292,
+      "accessCount": 7,
+      "lastAccessed": 1777690643821,
       "type": "directory"
     },
     {
       "path": "ops_db/modules/replicate.py",
-      "accessCount": 5,
-      "lastAccessed": 1777685150553,
-      "type": "file"
-    },
-    {
-      "path": "ops_db/lib/ssh_client.py",
-      "accessCount": 3,
-      "lastAccessed": 1777684660041,
-      "type": "file"
-    },
-    {
-      "path": "ops_db/modules/install.py",
-      "accessCount": 3,
-      "lastAccessed": 1777684660978,
-      "type": "file"
-    },
-    {
-      "path": "ops_db/lib/checker.py",
-      "accessCount": 2,
-      "lastAccessed": 1777684660485,
-      "type": "file"
-    },
-    {
-      "path": "ops_db/lib/config_gen.py",
-      "accessCount": 2,
-      "lastAccessed": 1777684926604,
+      "accessCount": 6,
+      "lastAccessed": 1777690643437,
       "type": "file"
     },
     {
       "path": "",
-      "accessCount": 2,
-      "lastAccessed": 1777686030422,
+      "accessCount": 4,
+      "lastAccessed": 1777690612977,
       "type": "directory"
     },
     {
+      "path": "ops_db/modules/install.py",
+      "accessCount": 4,
+      "lastAccessed": 1777690641483,
+      "type": "file"
+    },
+    {
+      "path": "ops_db/lib/ssh_client.py",
+      "accessCount": 4,
+      "lastAccessed": 1777690656726,
+      "type": "file"
+    },
+    {
+      "path": "ops_db/lib/checker.py",
+      "accessCount": 3,
+      "lastAccessed": 1777690656648,
+      "type": "file"
+    },
+    {
       "path": "docs/03-备份恢复使用指南.md",
-      "accessCount": 2,
-      "lastAccessed": 1777686040503,
+      "accessCount": 3,
+      "lastAccessed": 1777690672689,
+      "type": "file"
+    },
+    {
+      "path": "ops_db/lib/config_gen.py",
+      "accessCount": 3,
+      "lastAccessed": 1777690672780,
       "type": "file"
     },
     {
@@ -163,6 +163,66 @@
       "path": "ops_db/config/my.cnf.j2",
       "accessCount": 1,
       "lastAccessed": 1777684671821,
+      "type": "file"
+    },
+    {
+      "path": "audit_system_DESIGN.md",
+      "accessCount": 1,
+      "lastAccessed": 1777690626475,
+      "type": "file"
+    },
+    {
+      "path": "DESIGN.md",
+      "accessCount": 1,
+      "lastAccessed": 1777690627882,
+      "type": "file"
+    },
+    {
+      "path": "SESSION.md",
+      "accessCount": 1,
+      "lastAccessed": 1777690628078,
+      "type": "file"
+    },
+    {
+      "path": "CLAUDE.md",
+      "accessCount": 1,
+      "lastAccessed": 1777690628810,
+      "type": "file"
+    },
+    {
+      "path": "ops_db/modules/check.py",
+      "accessCount": 1,
+      "lastAccessed": 1777690643119,
+      "type": "file"
+    },
+    {
+      "path": "ops_db/lib/mysql_conn.py",
+      "accessCount": 1,
+      "lastAccessed": 1777690655960,
+      "type": "file"
+    },
+    {
+      "path": "ops_db",
+      "accessCount": 1,
+      "lastAccessed": 1777690665499,
+      "type": "directory"
+    },
+    {
+      "path": "docs",
+      "accessCount": 1,
+      "lastAccessed": 1777690666118,
+      "type": "directory"
+    },
+    {
+      "path": "ops_db/lib/system_detect.py",
+      "accessCount": 1,
+      "lastAccessed": 1777690673437,
+      "type": "file"
+    },
+    {
+      "path": "ops_db/modules/schedule.py",
+      "accessCount": 1,
+      "lastAccessed": 1777692711152,
       "type": "file"
     }
   ],

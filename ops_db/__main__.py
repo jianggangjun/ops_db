@@ -160,6 +160,22 @@ def _build_parser() -> argparse.ArgumentParser:
     p_check.add_argument("--verbose", "-v", action="store_true")
     _add_ssh_args(p_check)
 
+    # ── schedule ───────────────────────────────────────────────────────────
+    p_schedule = subparsers.add_parser("schedule", help="定时备份调度管理")
+    sub_sp = p_schedule.add_subparsers(dest="schedule_action", help="调度操作")
+
+    p_add = sub_sp.add_parser("add", help="添加定时调度")
+    p_add.add_argument("--name", required=True, help="调度名称（唯一标识）")
+    p_add.add_argument("--cron", required=True, help="cron 表达式，如 '0 2 * * *'")
+    p_add.add_argument("backup_cmd", nargs="+", help="备份命令（不含 cron 前缀）")
+    _add_ssh_args(p_add)
+
+    sub_sp.add_parser("list", help="查看定时调度列表")
+
+    p_rm = sub_sp.add_parser("remove", help="删除定时调度")
+    p_rm.add_argument("--name", required=True, help="要删除的调度名称")
+    _add_ssh_args(p_rm)
+
     return parser
 
 
@@ -492,6 +508,45 @@ def _dispatch(args: argparse.Namespace) -> int:
             "check_performance": not getattr(args, "no_performance", False),
         }
         success, msg = check(**module_kwargs)
+
+    # ── schedule ───────────────────────────────────────────────────────────────
+    elif args.command == "schedule":
+        from ops_db.modules.schedule import schedule_add, schedule_list, schedule_remove
+
+        if args.schedule_action == "add":
+            # backup_cmd 是 list，需要拼接成字符串
+            backup_cmd = "python3 -m ops_db " + " ".join(args.backup_cmd)
+            success, msg = schedule_add(
+                name=args.name,
+                cron=args.cron,
+                backup_cmd=backup_cmd,
+                ssh_host=getattr(args, "ssh_host", None),
+                ssh_port=getattr(args, "ssh_port", 22),
+                ssh_user=getattr(args, "ssh_user", "root"),
+                ssh_password=getattr(args, "ssh_password", None),
+                ssh_key=getattr(args, "ssh_key", None),
+            )
+        elif args.schedule_action == "list":
+            success, msg = schedule_list(
+                ssh_host=getattr(args, "ssh_host", None),
+                ssh_port=getattr(args, "ssh_port", 22),
+                ssh_user=getattr(args, "ssh_user", "root"),
+                ssh_password=getattr(args, "ssh_password", None),
+                ssh_key=getattr(args, "ssh_key", None),
+            )
+        elif args.schedule_action == "remove":
+            success, msg = schedule_remove(
+                name=args.name,
+                ssh_host=getattr(args, "ssh_host", None),
+                ssh_port=getattr(args, "ssh_port", 22),
+                ssh_user=getattr(args, "ssh_user", "root"),
+                ssh_password=getattr(args, "ssh_password", None),
+                ssh_key=getattr(args, "ssh_key", None),
+            )
+        else:
+            # 无子命令，显示 schedule 帮助
+            from ops_db.modules.schedule import schedule_list
+            success, msg = schedule_list()
 
     else:
         parser = _build_parser()
