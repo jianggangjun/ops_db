@@ -321,6 +321,8 @@ def backup_full(
     dest: Optional[str] = None,
     parallel: int = 4,
     compress: bool = False,
+    encrypt: bool = False,
+    encrypt_key_file: Optional[str] = None,
     yes: bool = False,
     socket: Optional[str] = None,
     expire_days: int = 7,
@@ -335,6 +337,8 @@ def backup_full(
     :param dest: 备份目标根目录，默认 /data/backup
     :param parallel: 并行备份线程数
     :param compress: 是否压缩（需要 qpress）
+    :param encrypt: 是否加密备份
+    :param encrypt_key_file: 加密密钥文件路径
     :param yes: 跳过确认
     :param socket: MySQL socket 文件路径
     :param expire_days: 备份保留天数
@@ -391,6 +395,12 @@ def backup_full(
         cmd_parts.append(f"--socket={socket}")
     if compress:
         cmd_parts.append("--compress")
+    if encrypt:
+        cmd_parts.append("--encrypt=AES256")
+        if encrypt_key_file:
+            cmd_parts.append(f"--encrypt-key-file={encrypt_key_file}")
+        else:
+            logger.warning("启用加密但未指定 --encrypt-key-file，将使用 xtrabackup 自动生成密钥")
     cmd_parts.append(f"--target-dir={backup_dir}")
 
     cmd = " ".join(cmd_parts)
@@ -404,12 +414,26 @@ def backup_full(
         return False, str(e)
 
     # --prepare（恢复前必须 prepare）
-    logger.info("执行 --apply-log（prepare）...")
-    try:
-        cp = run_command(f"xtrabackup --prepare --target-dir={backup_dir}", timeout=1800)
-    except Exception as e:
-        logger.error(f"prepare 失败: {e}")
-        return False, f"备份完成但 prepare 失败: {e}"
+    # 加密备份需要先解密
+    if encrypt:
+        logger.info("解密加密备份...")
+        decrypt_cmd = f"xtrabackup --decompress --decrypt=AES256 --encrypt-key-file={encrypt_key_file} --target-dir={backup_dir}"
+        cp = run_command(decrypt_cmd, timeout=3600)
+        logger.info(f"解密完成: {cp.stdout[-200:]}")
+
+        logger.info("执行 --apply-log（prepare）...")
+        try:
+            cp = run_command(f"xtrabackup --prepare --target-dir={backup_dir}", timeout=1800)
+        except Exception as e:
+            logger.error(f"prepare 失败: {e}")
+            return False, f"备份完成但 prepare 失败: {e}"
+    else:
+        logger.info("执行 --apply-log（prepare）...")
+        try:
+            cp = run_command(f"xtrabackup --prepare --target-dir={backup_dir}", timeout=1800)
+        except Exception as e:
+            logger.error(f"prepare 失败: {e}")
+            return False, f"备份完成但 prepare 失败: {e}"
 
     # 备份验证
     ok, verify_msg = _verify_backup(backup_dir, "full")
@@ -422,11 +446,34 @@ def backup_full(
     meta = _get_backup_meta(backup_dir, "full", host, port, user, password)
     _write_backup_meta(backup_dir, meta)
 
+    # 记录到备份历史
+    try:
+        from ..lib.backup_history import record_backup_from_meta
+        record_backup_from_meta(
+            backup_dir=backup_dir,
+            backup_type="full",
+            host=host,
+            port=port,
+            user=user,
+            meta=meta,
+            encrypted=encrypt,
+            compressed=compress,
+            status="success",
+        )
+    except Exception as e:
+        logger.warning(f"记录备份历史失败: {e}")
+
     # 清理过期备份（按天数）
     _cleanup_old_backups(dest, expire_days=expire_days)
 
+    extras = []
+    if encrypt:
+        extras.append("🔐 加密")
+    if compress:
+        extras.append("📦 压缩")
     size_gb = meta.get("data_size_gb", "?")
-    print_success(backup_dir, "全量备份", f"数据大小参考: {size_gb}GB")
+    extra_str = " | ".join(extras) + f" | 数据大小: ~{size_gb}GB" if extras else f"数据大小参考: {size_gb}GB"
+    print_success(backup_dir, "全量备份", extra_str)
     return True, f"全量备份成功: {backup_dir}"
 
 
@@ -442,6 +489,8 @@ def backup_incr(
     dest: Optional[str] = None,
     parallel: int = 4,
     compress: bool = False,
+    encrypt: bool = False,
+    encrypt_key_file: Optional[str] = None,
     yes: bool = False,
     socket: Optional[str] = None,
     expire_days: int = 7,
@@ -530,6 +579,12 @@ def backup_incr(
         cmd_parts.append(f"--socket={socket}")
     if compress:
         cmd_parts.append("--compress")
+    if encrypt:
+        cmd_parts.append("--encrypt=AES256")
+        if encrypt_key_file:
+            cmd_parts.append(f"--encrypt-key-file={encrypt_key_file}")
+        else:
+            logger.warning("启用加密但未指定 --encrypt-key-file，将使用 xtrabackup 自动生成密钥")
 
     cmd = " ".join(cmd_parts)
     logger.info(f"执行增量备份: {_mask_password(cmd, password)}")
@@ -548,13 +603,36 @@ def backup_incr(
 
     # 写元数据
     meta = _get_backup_meta(incr_dir, "incr", host, port, user, password)
-    meta["basedir"] = latest_full
+    meta["basedir"] = latest_backup
     _write_backup_meta(incr_dir, meta)
+
+    # 记录到备份历史
+    try:
+        from ..lib.backup_history import record_backup_from_meta
+        record_backup_from_meta(
+            backup_dir=incr_dir,
+            backup_type="incr",
+            host=host,
+            port=port,
+            user=user,
+            meta=meta,
+            encrypted=encrypt,
+            compressed=compress,
+            status="success",
+        )
+    except Exception as e:
+        logger.warning(f"记录备份历史失败: {e}")
 
     # 清理过期备份（按天数）
     _cleanup_old_backups(dest, expire_days=expire_days)
 
-    print_success(incr_dir, "增量备份", f"基于: {latest_full}")
+    extras = []
+    if encrypt:
+        extras.append("🔐 加密")
+    if compress:
+        extras.append("📦 压缩")
+    extra_str = " | ".join(extras) + f" | 基于: {latest_backup}" if extras else f"基于: {latest_backup}"
+    print_success(incr_dir, "增量备份", extra_str)
     return True, f"增量备份成功: {incr_dir}"
 
 
@@ -742,6 +820,23 @@ def backup_dump(
     meta_file = dump_file + ".meta.json"
     with open(meta_file, "w", encoding="utf-8") as f:
         json.dump(meta, f, indent=2)
+
+    # 记录到备份历史
+    try:
+        from ..lib.backup_history import record_backup_from_meta
+        record_backup_from_meta(
+            backup_dir=dump_file,
+            backup_type="dump",
+            host=host,
+            port=port,
+            user=user,
+            meta=meta,
+            encrypted=False,
+            compressed=parallel > 1 or True,  # dump 备份 gzip 压缩
+            status="success",
+        )
+    except Exception as e:
+        logger.warning(f"记录备份历史失败: {e}")
 
     print_success(dump_file, "逻辑备份", f"文件大小: {file_size:.1f}MB")
     return True, f"逻辑备份成功: {dump_file}"

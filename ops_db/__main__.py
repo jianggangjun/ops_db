@@ -90,6 +90,9 @@ def _build_parser() -> argparse.ArgumentParser:
     p_backup.add_argument("--dest", help="备份目标路径（默认 /data/backup）")
     p_backup.add_argument("--parallel", type=int, default=4, help="并行线程数")
     p_backup.add_argument("--compress", action="store_true", help="压缩备份")
+    p_backup.add_argument("--encrypt", action="store_true", help="加密备份（需要 xtrabackup 加密支持）")
+    p_backup.add_argument("--encrypt-key-file", metavar="FILE",
+                          help="加密密钥文件路径（加密时必须）")
     p_backup.add_argument("--socket", help="MySQL socket 文件路径（用于本地连接）")
     p_backup.add_argument("--expire-days", type=int, default=7,
                           help="备份保留天数（默认 7 天）")
@@ -107,6 +110,8 @@ def _build_parser() -> argparse.ArgumentParser:
     p_restore.add_argument("--user", default="root")
     p_restore.add_argument("--password", help="建议用环境变量")
     p_restore.add_argument("--datadir", default="/var/lib/mysql", help="恢复目标 data 目录")
+    p_restore.add_argument("--decrypt-key-file", metavar="FILE",
+                          help="解密密钥文件（恢复加密备份时需要）")
     p_restore.add_argument("--binlog-dir", help="PITR：binlog 目录")
     p_restore.add_argument("--stop-datetime", help="PITR：停止时间")
     p_restore.add_argument("--binlog-file", help="binlog-replay：文件名")
@@ -251,6 +256,8 @@ def _run_remote(
             if k == "yes":
                 yes_flag = bool(v)
                 continue
+            if k == "decrypt_key_file":
+                continue
             remote_kwargs[k] = v
 
         result = deploy_and_run_on_remote(
@@ -332,6 +339,8 @@ def _dispatch(args: argparse.Namespace) -> int:
             "dest": args.dest,
             "parallel": args.parallel,
             "compress": args.compress,
+            "encrypt": getattr(args, "encrypt", False),
+            "encrypt_key_file": getattr(args, "encrypt_key_file", None),
             "socket": args.socket,
             "expire_days": args.expire_days,
             "databases": args.databases,
@@ -361,14 +370,14 @@ def _dispatch(args: argparse.Namespace) -> int:
                                if k not in ("type", "databases", "all_databases")}
                 success, msg = backup_full(**full_kwargs)
             elif args.type == "incr":
-                # incr 不支持 compress / expire_days / databases / all_databases
+                # incr 不支持 databases / all_databases
                 incr_kwargs = {k: v for k, v in common_kwargs.items()
-                               if k not in ("type", "compress", "expire_days", "databases", "all_databases")}
+                               if k not in ("type", "databases", "all_databases")}
                 success, msg = backup_incr(**incr_kwargs)
             else:
-                # dump 不支持 compress / expire_days，databases/all_databases 已在函数内处理
+                # dump 不支持 databases/all_databases 已在函数内处理
                 dump_kwargs = {k: v for k, v in common_kwargs.items()
-                               if k not in ("type", "compress", "expire_days")}
+                               if k not in ("type", "databases", "all_databases")}
                 success, msg = backup_dump(**dump_kwargs)
 
     # ── restore ─────────────────────────────────────────────────────────────
@@ -390,7 +399,9 @@ def _dispatch(args: argparse.Namespace) -> int:
             "user": args.user,
             "password": args.password,
             "datadir": args.datadir,
+            "backup_dir": args.backup_dir,
             "yes": args.yes,
+            "decrypt_key_file": getattr(args, "decrypt_key_file", None),
             "ssh_host": getattr(args, "ssh_host", None),
             "ssh_port": getattr(args, "ssh_port", 22),
             "ssh_user": getattr(args, "ssh_user", "root"),
@@ -409,7 +420,7 @@ def _dispatch(args: argparse.Namespace) -> int:
                 restore_pitr_chain,
             )
             local_kwargs = {k: v for k, v in module_kwargs.items()
-                            if not k.startswith("ssh_")}
+                            if not k.startswith("ssh_") and k not in ("decrypt_key_file", "type",)}
 
             if args.type == "full":
                 local_kwargs["backup_dir"] = args.backup_dir

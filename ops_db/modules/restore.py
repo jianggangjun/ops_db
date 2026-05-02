@@ -128,6 +128,7 @@ def restore_full(
     password: Optional[str] = None,
     datadir: str = "/var/lib/mysql",
     yes: bool = False,
+    decrypt_key_file: Optional[str] = None,
 ) -> tuple[bool, str]:
     """
     从全量备份恢复（xtrabackup --copy-back）。
@@ -141,6 +142,7 @@ def restore_full(
     :param password: 密码
     :param datadir: 恢复目标 data 目录
     :param yes: 跳过确认
+    :param decrypt_key_file: 解密密钥文件（加密备份恢复时需要）
     :return (success, message)
     """
     if not os.path.exists(backup_dir):
@@ -186,7 +188,25 @@ def restore_full(
     # 3. 重建 datadir
     os.makedirs(datadir, exist_ok=True)
 
-    # 4. --prepare（如果未 prepare）
+    # 4. 解密（如备份已加密）
+    encrypted_files = [f for f in os.listdir(backup_dir) if f.endswith(".xbc")]
+    if encrypted_files and decrypt_key_file:
+        logger.info(f"检测到加密备份文件，先解密（{len(encrypted_files)} 个）...")
+        decrypt_cmd = (
+            f"xtrabackup --decompress "
+            f"--decrypt=AES256 "
+            f"--encrypt-key-file={decrypt_key_file} "
+            f"--target-dir={backup_dir}"
+        )
+        logger.info(f"执行解密: {decrypt_cmd}")
+        try:
+            run_command(decrypt_cmd, timeout=600)
+        except Exception as e:
+            logger.warning(f"解密失败，可能已解密过或无需解密: {e}")
+    elif encrypted_files and not decrypt_key_file:
+        logger.warning("检测到加密备份文件但未提供 --decrypt-key-file，无法解密恢复")
+
+    # 5. --prepare（如果未 prepare）
     xtrabackup_info = os.path.join(backup_dir, "xtrabackup_checkpoints")
     if os.path.exists(xtrabackup_info):
         with open(xtrabackup_info) as f:
@@ -201,7 +221,7 @@ def restore_full(
                 except Exception as e:
                     logger.warning(f"prepare 失败，可能已执行过: {e}")
 
-    # 5. --copy-back
+    # 6. --copy-back
     logger.info("执行 xtrabackup --copy-back...")
     try:
         cp = run_command(
@@ -217,15 +237,15 @@ def restore_full(
             logger.warning("safety backup 不存在，跳过回滚")
         return False, f"copy-back 失败，已回滚: {e}"
 
-    # 6. 设置权限
+    # 7. 设置权限
     logger.info("设置权限...")
     run_command(f"chown -R mysql:mysql {datadir}")
 
-    # 7. 启动 MySQL
+    # 8. 启动 MySQL
     logger.info(f"启动 MySQL 服务: {start_cmd}")
     run_command(start_cmd, timeout=30)
 
-    # 8. 等待 MySQL 就绪
+    # 9. 等待 MySQL 就绪
     if not _wait_mysql_ready(host, port, timeout=60):
         logger.warning(f"MySQL 端口 {port} 未就绪，服务可能未正常启动")
     else:

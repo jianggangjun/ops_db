@@ -569,7 +569,17 @@ def deploy_and_run_on_remote(
         # CLI 参数名映射（内部名 → CLI 参数名）
         CLI_ARG_MAP = {
             "role": "type",
+            "type": "type",
             "server_id": "server-id",
+            "expire_days": "expire-days",
+            "encrypt_key_file": "encrypt-key-file",
+            "decrypt_key_file": "decrypt-key-file",
+            "ssh_host": "ssh-host",
+            "ssh_port": "ssh-port",
+            "ssh_user": "ssh-user",
+            "ssh_password": "ssh-password",
+            "ssh_key": "ssh-key",
+            "backup_dir": "backup-dir",
         }
 
         if module_args:
