@@ -260,6 +260,29 @@ def _run_remote(
                 continue
             remote_kwargs[k] = v
 
+        # 如果是 restore 且 backup-dir 是本地路径，先上传备份目录到远程
+        remote_backup_dir = None
+        if module == "restore" and "backup_dir" in remote_kwargs:
+            local_backup = remote_kwargs["backup_dir"]
+            if local_backup and local_backup.startswith("/"):  # 本地绝对路径
+                import os
+                if os.path.isdir(local_backup):
+                    remote_backup_dir = f"/tmp/ops_db_remote/backup/{os.path.basename(local_backup)}"
+                    logger.info(f"上传备份目录到远程: {local_backup} → {remote_backup_dir}")
+                    client.put_directory(local_backup, remote_backup_dir)
+                    remote_kwargs["backup_dir"] = remote_backup_dir
+
+        # 如果是 restore 且 binlog-dir 是本地路径，也上传
+        if module == "restore" and "binlog_dir" in remote_kwargs:
+            local_binlog = remote_kwargs["binlog_dir"]
+            if local_binlog and local_binlog.startswith("/"):  # 本地绝对路径
+                import os
+                if os.path.isdir(local_binlog):
+                    remote_binlog_dir = f"/tmp/ops_db_remote/binlog/{os.path.basename(local_binlog)}"
+                    logger.info(f"上传 binlog 目录到远程: {local_binlog} → {remote_binlog_dir}")
+                    client.put_directory(local_binlog, remote_binlog_dir)
+                    remote_kwargs["binlog_dir"] = remote_binlog_dir
+
         result = deploy_and_run_on_remote(
             ssh_client=client,
             remote_work_dir=remote_dir,
