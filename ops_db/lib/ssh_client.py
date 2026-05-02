@@ -570,6 +570,7 @@ def deploy_and_run_on_remote(
         CLI_ARG_MAP = {
             "role": "type",
             "type": "type",
+            "root_password": "password",
             "server_id": "server-id",
             "expire_days": "expire-days",
             "encrypt_key_file": "encrypt-key-file",
