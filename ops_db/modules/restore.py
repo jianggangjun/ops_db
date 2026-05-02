@@ -236,6 +236,84 @@ def restore_full(
 
 
 # ---------------------------------------------------------------------------
+# 增量链工具
+# ---------------------------------------------------------------------------
+
+def _parse_xtrabackup_checkpoints(backup_dir: str) -> Optional[dict]:
+    """解析 xtrabackup_checkpoints 文件，返回 LSN 信息。"""
+    checkpoints_file = os.path.join(backup_dir, "xtrabackup_checkpoints")
+    if not os.path.exists(checkpoints_file):
+        return None
+    try:
+        with open(checkpoints_file, "r") as f:
+            content = f.read()
+        result: dict[str, str] = {}
+        for line in content.strip().split("\n"):
+            if "=" in line:
+                key, value = line.split("=", 1)
+                result[key.strip()] = value.strip()
+        return result
+    except Exception:
+        return None
+
+
+def _collect_incremental_chain(full_dir: str, dest: str) -> tuple[Optional[list[str]], Optional[str]]:
+    """
+    收集属于指定全量备份的增量链，并验证 LSN 连续性。
+
+    :param full_dir: 全量备份目录（如 /data/backup/full_20260501_210000）
+    :param dest: 备份根目录
+    :return: (有序增量列表, 错误信息)
+    """
+    # 获取全量的 to_lsn
+    full_checkpoints = _parse_xtrabackup_checkpoints(full_dir)
+    if not full_checkpoints:
+        return None, f"无法读取全量 checkpoints: {full_dir}"
+    full_to_lsn = full_checkpoints.get("to_lsn", "")
+
+    # 扫描所有 incr 目录，按时间排序
+    incr_dirs = []
+    for d in os.listdir(dest):
+        if not d.startswith("incr_"):
+            continue
+        path = os.path.join(dest, d)
+        if not os.path.isdir(path):
+            continue
+        incr_dirs.append(path)
+    incr_dirs.sort(key=lambda x: os.path.getmtime(x))
+
+    # 筛选出基于该全量的增量链
+    chain: list[str] = []
+    prev_lsn = full_to_lsn
+
+    for incr_dir in incr_dirs:
+        checkpoints = _parse_xtrabackup_checkpoints(incr_dir)
+        if not checkpoints:
+            logger.warning(f"跳过无法解析 checkpoints 的增量: {incr_dir}")
+            continue
+        from_lsn = checkpoints.get("from_lsn", "")
+        to_lsn = checkpoints.get("to_lsn", "")
+
+        if from_lsn == prev_lsn:
+            chain.append(incr_dir)
+            prev_lsn = to_lsn
+        else:
+            logger.info(f"增量链断裂检测: {incr_dir} from_lsn={from_lsn} != prev_lsn={prev_lsn}，跳过")
+
+    return chain, None
+
+
+def _mysql_service_name(family: str) -> tuple[str, str]:
+    """根据 OS family 返回启动/停止命令。"""
+    if family in ("debian", "ubuntu"):
+        return "service mysql start", "service mysql stop"
+    elif family in ("rhel", "centos", "fedora"):
+        return "systemctl start mysqld", "systemctl stop mysqld"
+    else:
+        return "systemctl start mysql", "systemctl stop mysql"
+
+
+# ---------------------------------------------------------------------------
 # PITR（时间点恢复）
 # ---------------------------------------------------------------------------
 
@@ -416,6 +494,156 @@ def restore_pitr(
 
     _print_success(datadir, "PITR 恢复", f"时间点: {stop_datetime}")
     return True, f"PITR 恢复成功（{stop_datetime}），原始数据在: {safety_dir}"
+
+
+# ---------------------------------------------------------------------------
+# PITR 增量链恢复（全量 + 多个增量按顺序 apply）
+# ---------------------------------------------------------------------------
+
+def restore_pitr_chain(
+    backup_dir: str,
+    stop_datetime: Optional[str] = None,
+    binlog_dir: str = "/var/lib/mysql/binlog",
+    host: str = "127.0.0.1",
+    port: int = 3306,
+    user: str = "root",
+    password: Optional[str] = None,
+    datadir: str = "/var/lib/mysql",
+    yes: bool = False,
+) -> tuple[bool, str]:
+    """
+    PITR 增量链恢复 — 对全量 + 多个增量按 LSN 顺序 apply 后 copy-back。
+
+    流程：
+    1. 收集增量链（基于同一全量，LSN 连续）
+    2. 全量 --prepare --apply-log-only
+    3. 逐个增量 --prepare --apply-log-only --incremental-dir
+    4. 最后一次全量 --prepare（不加 --apply-log-only，回放事务）
+    5. copy-back + chown + 启动
+
+    :param backup_dir: 全量备份目录
+    :param stop_datetime: 停止时间点（可选，用于 binlog 回放）
+    :param binlog_dir: binlog 文件目录
+    :param host: MySQL 主机
+    :param port: MySQL 端口
+    :param user: MySQL 用户
+    :param password: 密码
+    :param datadir: 恢复目标 data 目录
+    :param yes: 跳过确认
+    :return: (success, message)
+    """
+    if not os.path.exists(backup_dir):
+        return False, f"备份目录不存在: {backup_dir}"
+
+    # 收集增量链
+    dest = os.path.dirname(backup_dir.rstrip("/"))
+    chain, err = _collect_incremental_chain(backup_dir, dest)
+    if err:
+        return False, err
+
+    meta = _read_backup_meta(backup_dir)
+
+    _print_warning("PITR 增量链恢复", backup_dir, meta)
+    print(f"  全量备份 : {backup_dir}")
+    print(f"  增量链   : {len(chain) if chain else 0} 个增量")
+    if chain:
+        for i, c in enumerate(chain, 1):
+            print(f"    [{i}] {os.path.basename(c)}")
+    if stop_datetime:
+        print(f"  停止时间 : {stop_datetime}")
+    print(f"  恢复至   : {datadir}")
+    print("⚠️  此操作将覆盖 datadir 下所有数据！")
+    if not yes:
+        confirm = input("\n确认继续？输入 'yes' 确认: ").strip()
+        if confirm != "yes":
+            return False, "用户取消"
+
+    os_info = detect_os()
+    start_cmd, stop_cmd = _mysql_service_name(os_info.family)
+
+    report = PreflightReport()
+    report.results.extend([
+        check_root(),
+        check_xtrabackup(),
+        check_disk_space(datadir, required_gb=1),
+    ])
+    if report.has_fatal:
+        print(report.summary())
+        return False, "前置检查失败"
+
+    # 1. 停止 MySQL
+    logger.info("停止 MySQL 服务...")
+    run_command(f"{stop_cmd} || true", timeout=30)
+
+    # 2. Safety backup
+    safety_dir = datadir + f"_old_{datetime.now().strftime('%Y%m%d%H%M%S')}"
+    if os.path.exists(datadir) and os.listdir(datadir):
+        logger.info(f"移动现有数据到 safety backup: {safety_dir}")
+        run_command(f"mv {datadir} {safety_dir}")
+
+    os.makedirs(datadir, exist_ok=True)
+
+    # 3. 全量 prepare --apply-log-only
+    logger.info(f"Step 1/{(3 + len(chain) if chain else 3)}: 全量 prepare (--apply-log-only)...")
+    try:
+        run_command(
+            f"xtrabackup --prepare --apply-log-only --target-dir={backup_dir}",
+            timeout=1800,
+        )
+    except Exception as e:
+        return False, f"全量 prepare 失败: {e}"
+
+    # 4. 逐个增量 apply
+    if chain:
+        for i, incr_dir in enumerate(chain, 1):
+            logger.info(f"Step {1 + i}/{(1 + len(chain) + 1)}: "
+                        f"应用增量 [{i}/{len(chain)}]: {os.path.basename(incr_dir)}")
+            try:
+                run_command(
+                    f"xtrabackup --prepare --apply-log-only "
+                    f"--incremental-dir={incr_dir} --target-dir={backup_dir}",
+                    timeout=1800,
+                )
+            except Exception as e:
+                return False, f"增量 {incr_dir} apply 失败: {e}"
+
+    # 5. 最后一次全量 prepare（不加 --apply-log-only，回放事务）
+    logger.info(f"Step {2 + len(chain)}/{(2 + len(chain) + 1)}: 最终 prepare (回放事务)...")
+    try:
+        run_command(
+            f"xtrabackup --prepare --target-dir={backup_dir}",
+            timeout=1800,
+        )
+    except Exception as e:
+        return False, f"最终 prepare 失败: {e}"
+
+    # 6. copy-back
+    logger.info(f"Step {3 + len(chain)}/{(3 + len(chain) + 1)}: copy-back...")
+    try:
+        run_command(
+            f"xtrabackup --copy-back --target-dir={backup_dir} --datadir={datadir}",
+            timeout=1800,
+        )
+    except Exception as e:
+        logger.error(f"copy-back 失败: {e}")
+        if os.path.exists(safety_dir):
+            run_command(f"rm -rf {datadir} && mv {safety_dir} {datadir}")
+        return False, f"copy-back 失败，已回滚: {e}"
+
+    # 7. 设置权限 + 启动
+    run_command(f"chown -R mysql:mysql {datadir}")
+    logger.info(f"启动 MySQL: {start_cmd}")
+    run_command(start_cmd, timeout=30)
+
+    # 8. 等待 MySQL 就绪
+    if not _wait_mysql_ready(host, port, timeout=60):
+        logger.warning(f"MySQL 端口 {port} 未就绪")
+    else:
+        logger.info(f"MySQL 已就绪: {host}:{port}")
+
+    _print_success(datadir, "PITR 增量链恢复",
+                  f"全量: {os.path.basename(backup_dir)}, 增量: {len(chain) if chain else 0}")
+    return True, (f"PITR 增量链恢复成功，原始数据在: {safety_dir}")
 
 
 # ---------------------------------------------------------------------------

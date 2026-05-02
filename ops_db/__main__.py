@@ -99,7 +99,7 @@ def _build_parser() -> argparse.ArgumentParser:
 
     # ── restore ─────────────────────────────────────────────────────────────
     p_restore = subparsers.add_parser("restore", help="恢复备份")
-    p_restore.add_argument("--type", choices=["full", "pitr", "partial", "binlog-replay"],
+    p_restore.add_argument("--type", choices=["full", "pitr", "pitr-chain", "partial", "binlog-replay"],
                              default="full", help="恢复类型")
     p_restore.add_argument("--backup-dir", help="备份目录")
     p_restore.add_argument("--host", default="127.0.0.1")
@@ -390,6 +390,7 @@ def _dispatch(args: argparse.Namespace) -> int:
                 restore_full,
                 restore_partial,
                 restore_pitr,
+                restore_pitr_chain,
             )
             local_kwargs = {k: v for k, v in module_kwargs.items()
                             if not k.startswith("ssh_")}
@@ -402,6 +403,11 @@ def _dispatch(args: argparse.Namespace) -> int:
                 local_kwargs["stop_datetime"] = args.stop_datetime or datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                 local_kwargs["binlog_dir"] = args.binlog_dir or "/var/lib/mysql/binlog"
                 success, msg = restore_pitr(**local_kwargs)
+            elif args.type == "pitr-chain":
+                local_kwargs["backup_dir"] = args.backup_dir
+                local_kwargs["stop_datetime"] = args.stop_datetime
+                local_kwargs["binlog_dir"] = args.binlog_dir or "/var/lib/mysql/binlog"
+                success, msg = restore_pitr_chain(**local_kwargs)
             elif args.type == "partial":
                 local_kwargs["backup_dir"] = args.backup_dir
                 local_kwargs["databases"] = getattr(args, "databases", None)

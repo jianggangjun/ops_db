@@ -95,9 +95,15 @@
   "hotPaths": [
     {
       "path": "ops_db/__main__.py",
-      "accessCount": 8,
-      "lastAccessed": 1777685179339,
+      "accessCount": 13,
+      "lastAccessed": 1777690118921,
       "type": "directory"
+    },
+    {
+      "path": "ops_db/modules/restore.py",
+      "accessCount": 9,
+      "lastAccessed": 1777690052198,
+      "type": "file"
     },
     {
       "path": "ops_db/modules/backup.py",
@@ -157,12 +163,6 @@
       "path": "ops_db/config/my.cnf.j2",
       "accessCount": 1,
       "lastAccessed": 1777684671821,
-      "type": "file"
-    },
-    {
-      "path": "ops_db/modules/restore.py",
-      "accessCount": 1,
-      "lastAccessed": 1777686041081,
       "type": "file"
     }
   ],
