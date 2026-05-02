@@ -75,8 +75,8 @@ def _build_parser() -> argparse.ArgumentParser:
     p_install.add_argument("--logdir", help="日志目录（默认 datadir/log）")
     p_install.add_argument("--server-id", type=int, help="server-id（默认自动生成）")
     p_install.add_argument("--password", help="root 密码（建议用环境变量 MYSQL_PASSWORD）")
-    p_install.add_argument("--mirror", choices=["tencent", "aliyun", "tsinghua", "official"],
-                             default="tencent", help="MySQL 镜像源（默认 tencent）")
+    p_install.add_argument("--mirror", choices=["tencent", "aliyun", "tsinghua", "official", "intranet"],
+                             default="tencent", help="MySQL 镜像源（默认 tencent），intranet 从环境变量读取")
     _add_ssh_args(p_install)
 
     # ── backup ───────────────────────────────────────────────────────────────

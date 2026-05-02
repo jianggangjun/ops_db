@@ -87,6 +87,35 @@ MIRRORS: dict[str, Mirror] = {
     ),
 }
 
+
+def _load_intranet_mirror() -> Mirror:
+    """
+    从环境变量加载内网镜像源配置。
+
+    环境变量：
+      INTRANET_MYSQL_YUM_REPO      — MySQL yum repo URL（EL7）
+      INTRANET_MYSQL_YUM_REPO_EL8  — MySQL yum repo URL（EL8+）
+      INTRANET_MYSQL_APT_REPO      — MySQL apt repo URL
+      INTRANET_PERCONA_YUM_REPO    — Percona yum repo URL
+      INTRANET_PERCONA_APT_REPO    — Percona apt repo URL
+    """
+    import os
+    return Mirror(
+        name="内网源",
+        mysql_yum_repo=os.environ.get("INTRANET_MYSQL_YUM_REPO", ""),
+        mysql_yum_repo_el8=os.environ.get("INTRANET_MYSQL_YUM_REPO_EL8", ""),
+        percona_repo=os.environ.get("INTRANET_PERCONA_YUM_REPO", ""),
+        mysql_apt_repo=os.environ.get("INTRANET_MYSQL_APT_REPO", ""),
+        percona_apt=os.environ.get("INTRANET_PERCONA_APT_REPO", ""),
+    )
+
+
+def get_mirror(name: str) -> Mirror:
+    """获取镜像源配置，intranet 从环境变量加载。"""
+    if name == "intranet":
+        return _load_intranet_mirror()
+    return MIRRORS.get(name, MIRRORS["tencent"])
+
 # ---------------------------------------------------------------------------
 # XtraBackup 版本与 MySQL 版本对应关系
 # ---------------------------------------------------------------------------
@@ -232,10 +261,7 @@ def install_mysql(
     )
 
     # 3. 镜像源
-    mirror_cfg = MIRRORS.get(mirror)
-    if not mirror_cfg:
-        logger.warning(f"未知的镜像源 {mirror}，使用腾讯云")
-        mirror_cfg = MIRRORS["tencent"]
+    mirror_cfg = get_mirror(mirror)
     logger.info(f"使用镜像源: {mirror_cfg.name} ({mirror})")
 
     # 4. 确定版本

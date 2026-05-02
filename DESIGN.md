@@ -11,10 +11,11 @@ ops_db/
 │   ├── __init__.py
 │   ├── install.py         # MySQL 安装
 │   ├── backup.py          # 备份（xtrabackup / mydumper）
-│   ├── restore.py         # 恢复（全量 / PITR / partial / binlog-replay）
-│   ├── replicate.py       # 主从配置
-│   ├── rebuild.py          # 备库重搭
-│   └── check.py           # 健康检查
+│   ├── restore.py         # 恢复（全量 / PITR / PITR链 / partial / binlog-replay）
+│   ├── replicate.py       # 主从配置（支持远程自动安装）
+│   ├── rebuild.py         # 备库重搭
+│   ├── check.py           # 健康检查
+│   └── schedule.py        # 定时备份调度（本地 + 远程 crontab）
 ├── lib/                   # 公共库
 │   ├── __init__.py
 │   ├── checker.py         # 前置检查（磁盘/依赖/端口/权限）
@@ -135,6 +136,21 @@ $ ops_db.py install --version 8.0 --type master --port 3306 --password xxx
 | `aliyun` | 阿里云 | ✅ | ✅（海外） |
 | `tsinghua` | 清华镜像 | ✅ | ✅ |
 | `official` | 官方（海外） | ✅ | ✅ |
+| `intranet` | 内网源（环境变量） | ✅ | ✅ |
+
+**内网源配置（环境变量）**
+
+```bash
+# 在管理机或目标机器上设置内网源地址
+export INTRANET_MYSQL_YUM_REPO="http://192.168.1.100/mysql/yum/mysql-80-community-release-el8-4.noarch.rpm"
+export INTRANET_MYSQL_YUM_REPO_EL8="http://192.168.1.100/mysql/yum/mysql-80-community-release-el8-4.noarch.rpm"
+export INTRANET_PERCONA_YUM_REPO="http://192.168.1.100/percona/yum/release/latest/percona-release-latest.noarch.rpm"
+export INTRANET_MYSQL_APT_REPO="http://192.168.1.100/mysql/apt/"
+export INTRANET_PERCONA_APT_REPO="http://192.168.1.100/percona/apt/"
+
+# 使用内网源安装
+ops_db install --mirror=intranet --version=8.0
+```
 
 ---
 
@@ -159,6 +175,7 @@ ops_db.py backup --type dump --host 192.168.1.10 --port 3306 --databases myapp
 备份方式选择：
 ├─ full（全量）    → xtrabackup --backup --parallel N --target-dir=/path/to/backup
 ├─ incr（增量）    → xtrabackup --backup --incremental-basedir=/path/to/base --target-dir=/path/to/incr
+│                   （**Mode B 链式**：每个增量基于上一次增量，而非每次基于全量）
 │                   （xtrabackup 8.0 无 --incremental 标志，基于上一次 full 或 incr）
 └─ dump（逻辑）    → mysqldump --single-transaction --master-data=2
 
@@ -641,6 +658,49 @@ ops_db.py check --host 192.168.1.10 --port 3306
 
 ---
 
+### 场景 7：定时备份调度 — `ops_db schedule`
+
+通过 crontab 实现本地/远程 MySQL 机器的定时备份调度管理。
+
+**触发方式**
+
+```bash
+# 为远程机器添加定时备份（每天凌晨 2 点执行全量备份）
+ops_db.py schedule add \
+    --ssh-host 192.168.56.8 \
+    --ssh-user root \
+    --ssh-password xxx \
+    --name backup_full \
+    --cron "0 2 * * *" \
+    -- backup --type full --password 'xxx'
+
+# 查看远程机器的调度列表
+ops_db.py schedule list --ssh-host 192.168.56.8
+
+# 删除某个调度
+ops_db.py schedule remove backup_full --ssh-host 192.168.56.8
+
+# 本地机器配置调度
+ops_db.py schedule add --name backup_full --cron "0 2 * * *" -- backup --type full
+```
+
+**实现设计**
+
+```
+调度存储：
+- 保存在远程/本地机器的用户 crontab 中
+- 每个调度 job 以 ops_db_backup_<name> 为标记，便于管理
+
+核心函数：
+- schedule_add()    添加定时调度（本地或远程）
+- schedule_list()   查看调度列表
+- schedule_remove() 删除调度
+
+远程模式：通过 SSH 在远程机器上操作 crontab
+```
+
+---
+
 ## 四、CLI 设计（argparse）
 
 ```python
@@ -779,30 +839,29 @@ def rebuild_slave(...):
 
 ## 八、完整功能一览
 
-| 命令 | 功能 | 优先级 |
+| 命令 | 功能 | 状态 |
 |---|---|---|
-| `ops_db install` | MySQL 安装 + xtrabackup | P0 |
-| `ops_db backup` | 全量/增量/逻辑备份 | P0 |
-| `ops_db restore` | 全量/PITR/partial/binlog恢复 | P0 |
-| `ops_db replicate` | 主从配置 | P1 |
-| `ops_db rebuild` | 备库重搭（延时/故障/新机器） | P1 |
-| `ops_db check` | 健康检查 | P1 |
-| 定时备份 | cron / systemd timer 集成 | P2 |
-| 备份压缩 + 加密 | `innobackup --compress --encrypt` | P2 |
-| 备份 offsite | 备份到 OSS/S3 | P2 |
-| 在线 DDL | `pt-online-schema-change` | P3 |
-| 多实例支持 | 端口/socket 区分 | P2 |
+| `ops_db install` | MySQL 安装 + xtrabackup | ✅ 已完成 |
+| `ops_db backup` | 全量/增量（Mode B 链式）/逻辑/加密备份 + 历史数据库 | ✅ 已完成 |
+| `ops_db restore` | 全量/PITR/PITR链/partial/binlog恢复 + 解密支持 | ✅ 已完成 |
+| `ops_db replicate` | 主从配置（支持远程自动安装） | ✅ 已完成 |
+| `ops_db rebuild` | 备库重搭（延时/故障/新机器） | ⚠️ 部分完成 |
+| `ops_db check` | 健康检查 | ⚠️ 部分完成 |
+| `ops_db schedule` | 定时备份调度（本地 + 远程 crontab） | ✅ 已完成 |
+| 备份 offsite | 备份到 OSS/S3 | 🔜 待开发 |
+| 在线 DDL | `pt-online-schema-change` | 🔜 待开发 |
+| 多实例支持 | 端口/socket 区分 | 🔜 待开发 |
 
 ---
 
-## 九、可选增强方向（当前设计暂不覆盖）
+## 九、待开发功能
 
 | 功能 | 说明 | 优先级 |
 |---|---|---|
-| 定时备份 | 集成 cron 或 systemd timer | P1（最终要加）|
-| 恢复流程 | `ops_db restore` 恢复到某时间点 | P1（备份必须有对应的恢复）|
-| 多表空间恢复 | 只恢复特定表 | P2 |
-| 备份压缩 + 加密 | `xtrabackup --compress --encrypt` | P2 |
-| 备份到 OSS/S3 | 备份文件 offsite | P2 |
+| 备份 offsite | 备份到 OSS/S3 | P2 |
+| 恢复后数据校验 | 恢复后自动校验数据完整性 | P2 |
+| GTID 自动化 | replicate / rebuild 支持 GTID 模式 | P2 |
+| 备份验证自动化 | 备份后自动执行 xtrabackup --prepare 验证 | P2 |
 | 在线 DDL | pt-online-schema-change | P3 |
+| 多实例支持 | 端口/socket 区分 | P2 |
 | 连接池 + 探活 | 长连接保活 | P3 |
