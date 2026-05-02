@@ -207,19 +207,21 @@ def restore_full(
         logger.warning("检测到加密备份文件但未提供 --decrypt-key-file，无法解密恢复")
 
     # 5. --prepare（如果未 prepare）
+    # 通过 backup_type 判断：未 prepare 时为 "full" 或 "incremental"，已 prepare 时为 "full-prepared"
     xtrabackup_info = os.path.join(backup_dir, "xtrabackup_checkpoints")
     if os.path.exists(xtrabackup_info):
         with open(xtrabackup_info) as f:
             content = f.read()
-            if "to_lsn" not in content or "full backup" in content.lower():
-                logger.info("备份未 prepare，执行 --apply-log...")
-                try:
-                    run_command(
-                        f"xtrabackup --prepare --target-dir={backup_dir}",
-                        timeout=1800,
-                    )
-                except Exception as e:
-                    logger.warning(f"prepare 失败，可能已执行过: {e}")
+        # backup_type 为 "full-prepared" 表示已 prepare，"full" 表示未 prepare
+        if "full-prepared" not in content:
+            logger.info("备份未 prepare，执行 --apply-log...")
+            try:
+                run_command(
+                    f"xtrabackup --prepare --target-dir={backup_dir}",
+                    timeout=1800,
+                )
+            except Exception as e:
+                logger.warning(f"prepare 失败，可能已执行过: {e}")
 
     # 6. --copy-back
     logger.info("执行 xtrabackup --copy-back...")

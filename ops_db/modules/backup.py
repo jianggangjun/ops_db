@@ -221,55 +221,39 @@ def _verify_backup(
     backup_type: str,  # full / incr / dump
 ) -> tuple[bool, str]:
     """
-    验证备份完整性。
+    验证备份完整性（不执行 prepare，保留 PITR 链）。
 
-    - full: 使用 xtrabackup --prepare 验证（prepare 后才能恢复）
-    - incr: 依次 prepare base + incr 验证
+    - full: 检查必要文件存在（ibdata1, xtrabackup_info 等）
+    - incr: 检查增量文件存在，不修改 base backup
     - dump: 使用 grep 统计 SQL 文件结构标记
 
     :return (success, message)
     """
-    if backup_type in ("full", "incr"):
-        # 读取元数据获取 basedir（增量备份需要）
-        meta = _read_backup_meta(backup_dir)
-        basedir = meta.get("basedir")
+    import os
 
-        if backup_type == "incr" and basedir:
-            # 增量备份验证：先 prepare base，再 apply-log incr
-            logger.info(f"验证增量备份，先 prepare 全量: {basedir}")
-            cmd_base = f"xtrabackup --prepare --apply-log-only --target-dir={basedir}"
-            logger.info(f"执行: {cmd_base}")
-            try:
-                cp = subprocess.run(cmd_base, shell=True, timeout=600, capture_output=True, text=True)
-                if cp.returncode != 0:
-                    return False, f"全量备份 prepare 失败: {cp.stderr[:500]}"
-            except Exception as e:
-                return False, f"全量备份 prepare 异常: {e}"
+    if backup_type == "dump":
+        # dump 备份验证：检查 SQL 文件存在
+        sql_files = list(Path(backup_dir).glob("*.sql.gz")) + list(Path(backup_dir).glob("*.sql"))
+        if not sql_files:
+            return False, "未找到 SQL 备份文件"
+        return True, f"找到 {len(sql_files)} 个 SQL 文件"
 
-            logger.info(f"验证增量备份 apply-log: {backup_dir}")
-            cmd_incr = f"xtrabackup --prepare --target-dir={basedir} --incremental-dir={backup_dir}"
-            logger.info(f"执行: {cmd_incr}")
-            try:
-                cp = subprocess.run(cmd_incr, shell=True, timeout=600, capture_output=True, text=True)
-                if cp.returncode != 0:
-                    return False, f"增量备份 apply-log 失败: {cp.stderr[:500]}"
-            except Exception as e:
-                return False, f"增量备份 apply-log 异常: {e}"
-        else:
-            # 全量备份验证：直接 prepare
-            cmd = f"xtrabackup --prepare --target-dir={backup_dir}"
-            logger.info(f"验证备份完整性: {cmd}")
-            try:
-                cp = subprocess.run(cmd, shell=True, timeout=600, capture_output=True, text=True)
-                if cp.returncode != 0:
-                    return False, f"备份验证失败: {cp.stderr[:500]}"
-            except subprocess.TimeoutExpired:
-                return False, "备份验证超时"
-            except Exception as e:
-                return False, f"备份验证异常: {e}"
+    # full/incr 备份验证：只检查文件存在，不 prepare
+    required_files = ["ibdata1", "xtrabackup_info"]
+    missing = []
+    for f in required_files:
+        if not Path(backup_dir, f).exists():
+            missing.append(f)
 
-        logger.info("备份完整性验证通过")
-        return True, "备份验证通过"
+    if missing:
+        return False, f"备份文件不完整，缺少: {', '.join(missing)}"
+
+    # 检查目录
+    if not Path(backup_dir, "mydb").exists() and not Path(backup_dir, "mysql").exists():
+        return False, "备份中未找到数据库目录"
+
+    logger.info(f"备份文件完整性检查通过: {backup_dir}")
+    return True, "备份验证通过"
 
     elif backup_type == "dump":
         # 逻辑备份验证：检查 SQL 文件是否包含必要的 DDL
@@ -413,29 +397,11 @@ def backup_full(
         logger.error(f"全量备份失败: {e}")
         return False, str(e)
 
-    # --prepare（恢复前必须 prepare）
-    # 加密备份需要先解密
-    if encrypt:
-        logger.info("解密加密备份...")
-        decrypt_cmd = f"xtrabackup --decompress --decrypt=AES256 --encrypt-key-file={encrypt_key_file} --target-dir={backup_dir}"
-        cp = run_command(decrypt_cmd, timeout=3600)
-        logger.info(f"解密完成: {cp.stdout[-200:]}")
+    # 注意：不再自动 prepare！
+    # PITR 增量链需要保留未 prepare 的全量备份，恢复时由 restore 模块负责 prepare
+    # 全量备份的 prepare 在 restore --type full 或 restore --type pitr-chain 时进行
 
-        logger.info("执行 --apply-log（prepare）...")
-        try:
-            cp = run_command(f"xtrabackup --prepare --target-dir={backup_dir}", timeout=1800)
-        except Exception as e:
-            logger.error(f"prepare 失败: {e}")
-            return False, f"备份完成但 prepare 失败: {e}"
-    else:
-        logger.info("执行 --apply-log（prepare）...")
-        try:
-            cp = run_command(f"xtrabackup --prepare --target-dir={backup_dir}", timeout=1800)
-        except Exception as e:
-            logger.error(f"prepare 失败: {e}")
-            return False, f"备份完成但 prepare 失败: {e}"
-
-    # 备份验证
+    # 备份验证（只检查备份文件完整性，不 prepare）
     ok, verify_msg = _verify_backup(backup_dir, "full")
     if not ok:
         logger.warning(f"备份验证未通过: {verify_msg}")
