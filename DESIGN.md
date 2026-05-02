@@ -157,9 +157,9 @@ ops_db.py backup --type dump --host 192.168.1.10 --port 3306 --databases myapp
 
 ```
 备份方式选择：
-├─ full（全量）    → xtrabackup --parallel N /path/to/backup
-├─ incr（增量）    → xtrabackup --incremental /path/to/backup
-│                   （基于上一次 incr 或 full）
+├─ full（全量）    → xtrabackup --backup --parallel N --target-dir=/path/to/backup
+├─ incr（增量）    → xtrabackup --backup --incremental-basedir=/path/to/base --target-dir=/path/to/incr
+│                   （xtrabackup 8.0 无 --incremental 标志，基于上一次 full 或 incr）
 └─ dump（逻辑）    → mysqldump --single-transaction --master-data=2
 
 备份流程：
@@ -319,11 +319,11 @@ ops_db.py replicate --master-host 192.168.1.10 --master-port 3306 \
    - 预计耗时（基于数据量估算）
 
 2. 对主库做全量备份
-   $ xtrabackup --user=root --password=xxx --host=xxx /backup/path
+   $ xtrabackup --user=root --password=xxx --backup --target-dir=/backup/path
    备份时间戳：XXXXX
 
 3. 备份验证
-   $ xtrabackup --apply-log /backup/path/XXXXX
+   $ xtrabackup --prepare --target-dir=/backup/path/XXXXX
    确认无报错
 
 4. 停止备库 MySQL
@@ -499,12 +499,12 @@ ops_db.py restore --type partial \
    （注意：有些场景只清空某个库，partial 模式见下方）
 
 5. 执行 --prepare（xtrabackup 备份的 prepare）
-   $ xtrabackup --apply-log [--export] /backup/full_20260429_100000
+   $ xtrabackup --prepare [--export] --target-dir=/backup/full_20260429_100000
    - 回放已提交的事务 + 回滚未提交的事务
    - PITR 模式在此步传入 --binlog 参数
 
 6. 执行 --copy-back
-   $ xtrabackup --copy-back /backup/full_20260429_100000
+   $ xtrabackup --copy-back --target-dir=/backup/full_20260429_100000
    $ chown -R mysql:mysql /var/lib/mysql
 
 7. 启动 MySQL
@@ -531,18 +531,17 @@ ops_db.py restore --type partial \
 操作步骤：
 
 1. 准备全量备份
-   $ xtrabackup --apply-log \
+   $ xtrabackup --prepare \
        --binlog-dir /var/lib/mysql/binlog \
-       --to-latest \
-       /backup/full_20260428_000000
+       --target-dir /backup/full_20260428_000000
 
    --binlog-dir 指定 binlog 文件目录
    --to-latest   应用 binlog 直到最新（可用 --stop-datetime 停在指定时间）
 
    等价于手动：
-   $ xtrabackup --apply-log --binlog-dir /path/to/binlog \
+   $ xtrabackup --prepare --binlog-dir /path/to/binlog \
        --stop-datetime="2026-04-29 14:55:00" \
-       /backup/full_20260428_000000
+       --target-dir=/backup/full_20260428_000000
 
 2. copy-back 恢复（与全量恢复相同）
 
@@ -559,7 +558,7 @@ ops_db.py restore --type partial \
 场景：某个库数据损坏，不需要恢复整个实例，只恢复该库
 
 1. 对全量备份做 prepare（--export 模式）
-   $ xtrabackup --apply-log --export /backup/full_20260429_100000
+   $ xtrabackup --prepare --export --target-dir=/backup/full_20260429_100000
 
 2. 删除目标库（只删要恢复的库）
    $ mysql -e "DROP DATABASE myapp"
