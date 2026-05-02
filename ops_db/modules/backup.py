@@ -255,43 +255,6 @@ def _verify_backup(
     logger.info(f"备份文件完整性检查通过: {backup_dir}")
     return True, "备份验证通过"
 
-    elif backup_type == "dump":
-        # 逻辑备份验证：检查 SQL 文件是否包含必要的 DDL
-        sql_file = backup_dir
-        # 如果传入的是目录，尝试找到对应的 .sql 或 .sql.gz 文件
-        if os.path.isdir(backup_dir):
-            candidates = [
-                os.path.join(backup_dir, f)
-                for f in os.listdir(backup_dir)
-                if f.endswith(".sql") or f.endswith(".sql.gz")
-            ]
-            if not candidates:
-                return False, f"未找到 SQL 文件在目录: {backup_dir}"
-            sql_file = candidates[0]
-
-        if sql_file.endswith(".gz"):
-            grep_cmd = f"zgrep -c 'DROP TABLE\\|CREATE TABLE' {sql_file}"
-        else:
-            grep_cmd = f"grep -c 'DROP TABLE\\|CREATE TABLE' {sql_file}"
-
-        try:
-            cp = subprocess.run(
-                grep_cmd,
-                shell=True,
-                timeout=60,
-                capture_output=True,
-                text=True,
-            )
-            count = int(cp.stdout.strip()) if cp.stdout.strip().isdigit() else 0
-            if count == 0:
-                return False, f"SQL 文件验证失败：未找到 DROP TABLE 或 CREATE TABLE 语句"
-            logger.info(f"SQL 文件验证通过，包含 {count} 条 DDL 语句")
-            return True, f"SQL 文件验证通过 ({count} 条 DDL 语句)"
-        except Exception as e:
-            return False, f"SQL 文件验证异常: {e}"
-
-    return False, f"未知备份类型: {backup_type}"
-
 
 # ---------------------------------------------------------------------------
 # 全量备份
@@ -310,6 +273,7 @@ def backup_full(
     yes: bool = False,
     socket: Optional[str] = None,
     expire_days: int = 7,
+    ssh_host: Optional[str] = None,
 ) -> tuple[bool, str]:
     """
     全量备份（xtrabackup --backup）。
@@ -326,11 +290,16 @@ def backup_full(
     :param yes: 跳过确认
     :param socket: MySQL socket 文件路径
     :param expire_days: 备份保留天数
+    :param ssh_host: 远程主机 IP（远程备份时用于目录区分）
     :return (success, message)
     """
     dest = dest or DEFAULT_BACKUP_ROOT
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    backup_dir = os.path.join(dest, f"full_{timestamp}")
+    # 远程备份时按主机分目录，避免多台主机备份混淆
+    if ssh_host and ssh_host not in ("127.0.0.1", "localhost"):
+        backup_dir = os.path.join(dest, ssh_host, f"full_{timestamp}")
+    else:
+        backup_dir = os.path.join(dest, f"full_{timestamp}")
 
     # 前置检查
     report = PreflightReport()
@@ -460,6 +429,7 @@ def backup_incr(
     yes: bool = False,
     socket: Optional[str] = None,
     expire_days: int = 7,
+    ssh_host: Optional[str] = None,
 ) -> tuple[bool, str]:
     """
     增量备份（xtrabackup --backup --incremental-basedir）。
@@ -478,12 +448,18 @@ def backup_incr(
     :param yes: 跳过确认
     :param socket: MySQL socket 文件路径
     :param expire_days: 备份保留天数
+    :param ssh_host: 远程主机 IP（远程备份时用于目录区分）
     :return (success, message)
     """
     dest = dest or DEFAULT_BACKUP_ROOT
+    # 远程备份时按主机分目录
+    host_prefix = ""
+    if ssh_host and ssh_host not in ("127.0.0.1", "localhost"):
+        host_prefix = ssh_host
 
     # 查找最新的备份（full 或 incr），作为增量起点
-    latest_backup = _find_latest_backup(dest)
+    search_dir = os.path.join(dest, host_prefix) if host_prefix else dest
+    latest_backup = _find_latest_backup(search_dir if host_prefix else dest)
     if not latest_backup:
         logger.warning("未找到任何备份，请先执行全量备份。")
         return False, "未找到备份，请先执行全量备份"
@@ -496,7 +472,7 @@ def backup_incr(
         from_lsn_info = f" (from_lsn={from_lsn})"
 
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    incr_dir = os.path.join(dest, f"incr_{timestamp}")
+    incr_dir = os.path.join(dest, host_prefix, f"incr_{timestamp}") if host_prefix else os.path.join(dest, f"incr_{timestamp}")
 
     # 前置检查
     report = PreflightReport()
@@ -622,18 +598,48 @@ def _parse_xtrabackup_checkpoints(backup_dir: str) -> Optional[dict]:
 
 
 def _find_latest_backup(dest: str) -> Optional[str]:
-    """查找最新的备份目录（full 或 incr）。"""
+    """查找最新的备份目录（full 或 incr）。
+
+    支持两层结构：dest/host_ip/full_timestamp 或单层 dest/full_timestamp。
+    """
     if not os.path.exists(dest):
         return None
+
+    # 尝试两层结构：dest/ip_addr/full_xxx 或 dest/ip_addr/incr_xxx
+    subdirs = [d for d in os.listdir(dest) if os.path.isdir(os.path.join(dest, d))]
+    ip_subdirs = [d for d in subdirs if _looks_like_ip(d)]
+
+    if ip_subdirs:
+        # 两层结构，在每个 IP 子目录下找最新的
+        all_backups = []
+        for ip_dir in ip_subdirs:
+            ip_path = os.path.join(dest, ip_dir)
+            sub_backups = [
+                os.path.join(ip_path, d)
+                for d in os.listdir(ip_path)
+                if os.path.isdir(os.path.join(ip_path, d))
+                and (d.startswith("full_") or d.startswith("incr_"))
+            ]
+            all_backups.extend(sub_backups)
+        if all_backups:
+            all_backups.sort(key=lambda x: os.path.getmtime(x), reverse=True)
+            return all_backups[0]
+
+    # 单层结构
     dirs = [
         os.path.join(dest, d)
-        for d in os.listdir(dest)
+        for d in subdirs
         if os.path.isdir(os.path.join(dest, d)) and (d.startswith("full_") or d.startswith("incr_"))
     ]
     if not dirs:
         return None
     dirs.sort(key=lambda x: os.path.getmtime(x), reverse=True)
     return dirs[0]
+
+
+def _looks_like_ip(s: str) -> bool:
+    """简单判断是否像 IP 地址（3个点分）。"""
+    return s.count(".") == 3 and all(p.isdigit() for p in s.split("."))
 
 
 def _find_latest_full_backup(dest: str) -> Optional[str]:
@@ -943,6 +949,8 @@ def _cleanup_old_backups(dest: str, expire_days: int = 7) -> None:
     """
     清理超过指定天数的全量备份目录。
 
+    支持两层结构：dest/ip/full_timestamp 或单层 dest/full_timestamp。
+
     :param dest: 备份根目录
     :param expire_days: 保留天数（默认 7 天）
     """
@@ -952,11 +960,25 @@ def _cleanup_old_backups(dest: str, expire_days: int = 7) -> None:
         return
 
     cutoff = _time.time() - expire_days * 86400
-    dirs = [
-        os.path.join(dest, d)
-        for d in os.listdir(dest)
-        if os.path.isdir(os.path.join(dest, d)) and d.startswith("full_")
-    ]
+
+    def _collect_full_backups(base: str) -> list:
+        """递归收集 base 下的所有 full_ 目录。"""
+        results = []
+        try:
+            for d in os.listdir(base):
+                path = os.path.join(base, d)
+                if not os.path.isdir(path):
+                    continue
+                if d.startswith("full_"):
+                    results.append(path)
+                elif _looks_like_ip(d):
+                    # 两层结构，深入下一层
+                    results.extend(_collect_full_backups(path))
+        except PermissionError:
+            pass
+        return results
+
+    dirs = _collect_full_backups(dest)
 
     for old_dir in dirs:
         mtime = os.path.getmtime(old_dir)
