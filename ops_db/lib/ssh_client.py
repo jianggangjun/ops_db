@@ -344,9 +344,15 @@ class SSHClient:
         channel = self._client.get_transport().open_session()
         channel.exec_command(f"mkdir -p {remote_dir} && cd {remote_dir} && tar -xzf -")
 
-        # 发送 tar 数据
+        # 发送 tar 数据（分块发送，避免大文件超时）
         channel.set_combine_stderr(True)
-        channel.send(tar_buffer.getvalue())
+        tar_data = tar_buffer.getvalue()
+        n = 0
+        while n < len(tar_data):
+            sent = channel.send(tar_data[n:])
+            if sent == 0:
+                break
+            n += sent
         channel.shutdown_write()
 
         # 等待完成
