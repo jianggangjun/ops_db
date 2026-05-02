@@ -148,20 +148,20 @@ def run_preflight_checks(actions: list[str]) -> list[CheckResult]:
 ### xtrabackup
 ```bash
 # 全量备份
-xtrabackup --user=root --password=xxx --parallel=4 /backup/path
+xtrabackup --user=root --password=xxx --parallel=4 --backup --target-dir=/backup/full
 
-# 增量备份
-xtrabackup --incremental --incremental-basedir=/backup/full /backup/incr
+# 增量备份（xtrabackup 8.0 注意：无 --incremental 标志）
+xtrabackup --user=root --password=xxx --backup --incremental-basedir=/backup/full --target-dir=/backup/incr
 
 # Prepare（恢复前必须）
-xtrabackup --apply-log /backup/full
+xtrabackup --prepare --target-dir=/backup/full
 
 # PITR prepare
-xtrabackup --apply-log --binlog-dir=/path/to/binlog \
-    --stop-datetime="2026-04-29 15:00:00" /backup/full
+xtrabackup --prepare --binlog-dir=/path/to/binlog \
+    --stop-datetime="2026-04-29 15:00:00" --target-dir=/backup/full
 
 # 恢复
-xtrabackup --copy-back /backup/full
+xtrabackup --copy-back --target-dir=/backup/full
 ```
 
 ### mysqldump
@@ -195,8 +195,8 @@ SHOW SLAVE STATUS\G
 
 ```bash
 # MySQL 密码（优先读取）
-export MYSQL_PASSWORD="xxx"
-export REPL_PASSWORD="xxx"
+export MYSQL_PASSWORD="***"
+export REPL_PASSWORD="***"
 
 # 备份目标路径
 export OPS_DB_BACKUP_DIR="/data/backup"
@@ -204,3 +204,14 @@ export OPS_DB_BACKUP_DIR="/data/backup"
 # 审计 ES 地址
 export ES_HOST="http://localhost:9200"
 ```
+
+---
+
+## 已知 Bug 修复记录
+
+| Bug # | 问题 | 修复 |
+|-------|------|------|
+| #16 | `tarfile.GZIP` Python 3.12 不存在 | 移除 `format=tarfile.GZIP`，`mode="w:gz"` 已足够 |
+| #17 | `paramiko.SSHClient` 无 `getpeername()` 方法 | connect() 时保存 `self._host`，替换 getpeername 调用 |
+| #3  | xtrabackup 8.0 `--incremental` 参数移除 | 改用 `--incremental-basedir=<dir>` |
+| #10~#15 | partial 单库恢复完整修复链 | CREATE TABLE → DISCARD → chown → IMPORT |
